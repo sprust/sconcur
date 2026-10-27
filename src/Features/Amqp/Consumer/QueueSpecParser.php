@@ -9,8 +9,8 @@ use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
 use SConcur\Features\Amqp\ConnectionOptions;
 
 /**
- * Reads the queue list a consumer worker was launched with — one argv flag holding JSON,
- * because a worker is configured through argv and the master JSON-encodes non-scalars:
+ * Reads the queue list a consumer is given — JSON, to the constructor or, for a consumer
+ * run on its own through fromArgs(), as one argv flag:
  *
  *     --queues=[{"name":"orders","coroutineCount":8},{"name":"emails"}]
  *
@@ -163,8 +163,9 @@ readonly class QueueSpecParser
 
     /**
      * A consumer is a channel, and a connection runs out of channel numbers at
-     * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as the broker's "504 channel
-     * id space exhausted" on whichever consumer happened to start last.
+     * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as a refused channel open
+     * ("the maximum number of channels for this connection has been reached") on whichever
+     * consumer happened to start last.
      *
      * @param list<QueueSpec> $specs
      */

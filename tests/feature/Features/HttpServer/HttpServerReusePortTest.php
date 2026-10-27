@@ -16,14 +16,12 @@ class HttpServerReusePortTest extends TestCase
     public function testTwoServersShareOnePortAndBothServe(): void
     {
         $first = TestHttpServer::start(
-            options: ['reusePort' => 1],
         );
 
         try {
-            // The second process binds the SAME port — only possible with
-            // SO_REUSEPORT; without it this would fail with EADDRINUSE.
+            // The second process binds the SAME port — possible because
+            // every server binds with SO_REUSEPORT.
             $second = TestHttpServer::start(
-                options: ['reusePort' => 1],
                 port: $first->port(),
             );
 
@@ -56,7 +54,7 @@ class HttpServerReusePortTest extends TestCase
     /**
      * @return array{int, string} [status, body]
      */
-    private function get(string $url): array
+    protected function get(string $url): array
     {
         $curl = curl_init($url);
 

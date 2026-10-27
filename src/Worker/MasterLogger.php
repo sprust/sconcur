@@ -11,10 +11,10 @@ namespace SConcur\Worker;
  * no logrotate needed).
  *
  * Line format follows the project logger convention — bracketed timestamp (with
- * microseconds), level, a bracketed scope tag, the message and a trailing context
- * array:
+ * microseconds), level, a bracketed scope tag, the message and the context as JSON
+ * ([] when empty):
  *   [Y-m-d H:i:s.uuuuuu] LEVEL [master: pid]: <message> []
- *   [Y-m-d H:i:s.uuuuuu] LEVEL [worker: pid #index]: <message> []
+ *   [Y-m-d H:i:s.uuuuuu] LEVEL [worker: pid group #index]: <message> []
  *
  * Worker stdout/stderr captured by the master is re-emitted here via worker(), so a
  * crash's output lives in the same file and format as the lifecycle events.
@@ -37,6 +37,17 @@ class MasterLogger
         protected int $masterPid,
         protected LogTarget $logTo = LogTarget::File,
     ) {
+    }
+
+    /**
+     * Where the access lines of workers with AccessLogTarget::File go: this prefix with
+     * "-YYYY-MM-DD.log" after it, a file of the day the extension's logger opens in each
+     * worker. Beside the journal and named after it, so pruneOldFiles() takes the old
+     * ones with the journal's.
+     */
+    public static function accessLogPrefix(string $logDir, string $name): string
+    {
+        return $logDir . '/' . $name . '-access';
     }
 
     /**

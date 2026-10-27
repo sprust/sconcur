@@ -22,7 +22,7 @@ require_once __DIR__ . '/../../lib/benchmarker.php';
 readonly class AmqpBench
 {
     /** How many channels the async mode spreads its coroutines over. */
-    private const int ASYNC_CHANNELS = 50;
+    protected const int ASYNC_CHANNELS = 50;
 
     public Connection $connection;
 

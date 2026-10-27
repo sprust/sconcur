@@ -8,6 +8,7 @@ use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Features\SocketServer\Dto\Connection;
 use SConcur\Features\SocketServer\Payloads\ServePayload;
 use SConcur\Scheduler\Scheduler;
@@ -42,24 +43,31 @@ readonly class SocketServer
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
      *                                                                       the server shuts down gracefully so a master can respawn a fresh
-     *                                                                       process. Reuses the graceful-shutdown path.
-     * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
-     *                                                                       the kernel load-balances connections across them (run one process
-     *                                                                       per core). Linux only; each process must set it.
+     *                                                                       process. Reuses the graceful-shutdown path. Under a worker master
+     *                                                                       each worker stops at a number drawn between it and half again as
+     *                                                                       many, so a pool does not restart as one (Scheduler::spreadLimit(),
+     *                                                                       docs/worker-master.md).
+     * @param string                                    $address             "host:port" to listen on. Bound with SO_REUSEPORT, always: the
+     *                                                                       workers of a pool each bind the port, and the kernel spreads
+     *                                                                       connections over them (Linux). A second process on the port shares
+     *                                                                       it rather than failing to bind.
      * @param null|Closure(Throwable, Connection): void $onError             observes an uncaught handler failure (for logging/tracing); the
      *                                                                       connection is closed afterwards. The hook may itself write a final
      *                                                                       frame to the connection before it is closed.
      * @param null|int                                  $masterPid           if set, the server self-terminates (graceful shutdown) once it is
-     *                                                                       no longer a child of this pid — i.e. its WorkerMaster died. Under
-     *                                                                       WorkerMaster this is set automatically from the injected
-     *                                                                       --masterPid flag via fromArgs(); null (default) off.
-     * @param string                                    $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
-     *                                                                       to (empty = push off). Best-effort and lossy: an absent collector
-     *                                                                       never affects serving. fromArgs() reads it from
-     *                                                                       SCONCUR_TELEMETRY_SOCKET (the master injects it from runtimeDir/name).
-     * @param string                                    $serverName          labels the pushed snapshot — the pool scope the collector
-     *                                                                       aggregates by (default "sconcur-server").
-     * @param int                                       $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
+     *                                                                       no longer a child of this pid — i.e. its WorkerMaster died — so an
+     *                                                                       orphaned worker drains and exits instead of holding the port. Null
+     *                                                                       (default): the master that forked this worker (WorkerContext), or
+     *                                                                       none outside a master.
+     * @param null|string                               $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
+     *                                                                       to; empty = push off. Best-effort and lossy: an absent collector
+     *                                                                       never affects serving. Null (default): SCONCUR_TELEMETRY_SOCKET,
+     *                                                                       which a WorkerMaster sets for its workers when telemetry is on.
+     * @param null|string                               $serverName          labels the pushed snapshot — the pool scope the collector
+     *                                                                       aggregates by. Null (default): SCONCUR_SERVER_NAME, which a
+     *                                                                       WorkerMaster sets for its workers, or "sconcur-server".
+     * @param null|int                                  $telemetryIntervalMs snapshot sample/push cadence in ms (0 = the default). Null
+     *                                                                       (default): SCONCUR_TELEMETRY_INTERVAL_MS, or the default.
      * @param int                                       $preemptionQuantumMs automatic-preemption quantum: while serving, the
      *                                                                       extension interrupts the VM every quantum and parks the
      *                                                                       running handler coroutine, so a CPU-bound handler cannot
@@ -79,20 +87,18 @@ readonly class SocketServer
         protected int $handlerTimeoutMs = 0,
         protected int $maxConnections = 0,
         protected int $shutdownTimeoutMs = 10_000,
-        protected bool $reusePort = false,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
-        protected string $telemetrySocket = '',
-        protected string $serverName = 'sconcur-server',
-        protected int $telemetryIntervalMs = 0,
+        protected ?string $telemetrySocket = null,
+        protected ?string $serverName = null,
+        protected ?int $telemetryIntervalMs = null,
         protected int $preemptionQuantumMs = 0,
     ) {
     }
 
     /**
      * Create a new server from command line arguments (scalar constructor params as
-     * --name=value). Under WorkerMaster the injected --masterPid wires the orphan
-     * check.
+     * --name=value), for a script that runs one on its own.
      *
      * @param array<int, string>                        $argv
      * @param null|Closure(Throwable, Connection): void $onError
@@ -104,8 +110,6 @@ readonly class SocketServer
         if ($onError !== null) {
             $overrides['onError'] = $onError;
         }
-
-        $overrides = self::applyTelemetryEnvironment($overrides);
 
         return new SocketServer(...$overrides);
     }
@@ -123,11 +127,9 @@ readonly class SocketServer
     {
         $flowKey = uniqid('sock_', more_entropy: true);
 
-        $stopRequested = false;
-
-        // Install handlers before starting the listener so a signal arriving during
-        // startup is not missed, and restore the previous ones when serving ends.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        // Watched before the listener opens, so a signal arriving during startup is not the
+        // one that gets lost.
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -139,27 +141,25 @@ readonly class SocketServer
                     maxMessageBytes: $this->maxMessageBytes,
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
-                    reusePort: $this->reusePort,
-                    telemetrySocket: $this->telemetrySocket,
-                    serverName: $this->serverName,
-                    telemetryIntervalMs: $this->telemetryIntervalMs,
+                    telemetrySocket: $this->telemetrySocket ?? self::fromEnvironment('SCONCUR_TELEMETRY_SOCKET'),
+                    serverName: $this->serverName ?? self::fromEnvironment('SCONCUR_SERVER_NAME', 'sconcur-server'),
+                    telemetryIntervalMs: $this->telemetryIntervalMs
+                        ?? (int) self::fromEnvironment('SCONCUR_TELEMETRY_INTERVAL_MS', '0'),
                 ),
             );
 
             self::logServerEvent(
                 sprintf(
-                    'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
+                    'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d',
                     $this->address,
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
                     $this->maxConnections,
-                    (int) $this->reusePort,
                 ),
             );
 
-            $onError   = $this->onError;
-            $masterPid = $this->masterPid;
+            $onError = $this->onError;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
@@ -172,11 +172,8 @@ readonly class SocketServer
                         event: $payload,
                     );
                 },
-                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
-                    // Stop on a shutdown signal, or when this worker has been orphaned
-                    // — its WorkerMaster (parent pid) is gone.
-                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
-                },
+                // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
+                shouldStop: $stopRequest->isRequested(...),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.
@@ -189,7 +186,7 @@ readonly class SocketServer
                 handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
         }
     }
 

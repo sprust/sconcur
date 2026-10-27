@@ -6,18 +6,17 @@
 //! per-connection inbound stream — a socket handler reads frames itself, so each
 //! connection registers a MessageState PHP pulls with next().
 
-pub mod listen;
 pub mod payloads;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
+use crate::features::httpserver::listen::{self, Listener};
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
 use crate::socket::{MessageState, PendingConnection, WriteKind, dispatch, next_connection_id};
@@ -117,7 +116,7 @@ async fn handle_serve(task: Task) {
         }
     };
 
-    let listener = match listen::listen(&payload.address, payload.reuse_port) {
+    let listener = match listen::open(&payload.address) {
         Ok(listener) => listener,
         Err(error) => {
             task.add_result(Result::error(message, ERRORS.by_err("listen", error)))
@@ -242,7 +241,7 @@ impl Config {
 }
 
 async fn accept_loop(
-    listener: TcpListener,
+    mut listener: Listener,
     message: Arc<Message>,
     config: Config,
     connections: mpsc::Sender<ConnectionEvent>,
@@ -461,7 +460,7 @@ async fn serve_connection(
 
     core_states::get().delete_state(&inbound_key).await;
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         &remote_addr.to_string(),

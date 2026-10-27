@@ -2,10 +2,11 @@ English | [Русский](cli.ru.md)
 
 # CLI commands
 
-The package installs three executables into `vendor/bin` (the `bin` section of
-`composer.json`): `sconcur-load`, `sconcur-status`, `sconcur-server`. From the
-repository they run as `bin/<command>`, from a consumer application as
-`vendor/bin/<command>`.
+The package installs two executables into `vendor/bin` (the `bin` section of
+`composer.json`): `sconcur-load` and `sconcur-status`. From the repository they run as
+`bin/<command>`, from a consumer application as `vendor/bin/<command>`. The worker
+master has no command of its own: it is built in PHP, in the process that loaded the
+application — see [Worker master](worker-master.md).
 
 ## sconcur-load — download the extension
 
@@ -59,9 +60,10 @@ RUN vendor/bin/sconcur-load "$(php-config --extension-dir)/sconcur.so" \
 
 `bin/sconcur-load` is part of the package and appears only after dependencies are
 installed. To place the extension into a system directory at an earlier build stage
-(for layer caching), take the exact version from `composer.lock` — it pins the
-resolved version rather than a constraint — and download the asset directly. Only
-`composer.lock` needs to be copied, `vendor/` is not required:
+(for layer caching), take the exact version from `composer.lock` — unlike
+`composer.json`, it pins the resolved version rather than a constraint — and download
+the asset directly. Only `composer.lock` needs to be copied, `vendor/` is not
+required:
 
 ```dockerfile
 COPY composer.lock ./
@@ -110,17 +112,3 @@ branch without parsing the output. The release CI is built on this: it lets the
 build through only when `ready` is true, and tags the release as
 `v<extension_version>`.
 
-## sconcur-server — worker master
-
-Starts and supervises a pool of worker processes (scaling across cores via
-`SO_REUSEPORT`, restarting crashed ones, graceful shutdown). Commands
-`start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
-master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
-(`start` and `stop` accept it and check the name, but serve the whole config):
-
-```sh
-vendor/bin/sconcur-server start --configPath=/app/master.json
-```
-
-Details — config parameters, restart policy, logging and graceful shutdown — are in
-[Worker master](worker-master.md).

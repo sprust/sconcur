@@ -45,7 +45,7 @@ class SocketServerMaxConnectionsTest extends TestCase
         }
     }
 
-    private function roundtripWithRetry(TestSocketServer $server, string $data): ?string
+    protected function roundtripWithRetry(TestSocketServer $server, string $data): ?string
     {
         $deadline = microtime(true) + 5.0;
 

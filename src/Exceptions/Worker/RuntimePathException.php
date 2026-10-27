@@ -7,8 +7,8 @@ namespace SConcur\Exceptions\Worker;
 use RuntimeException;
 
 /**
- * A required path (runtime directory, log directory or worker script) is missing or
- * not writable/readable, so the master cannot operate.
+ * A path the master needs (the runtime or log directory, the lock or state file) cannot
+ * be created or written, so the master cannot operate.
  */
 class RuntimePathException extends RuntimeException
 {

@@ -77,3 +77,7 @@ function armPreemption(int $quantumMs, callable $callback): void
 function disarmPreemption(): void
 {
 }
+
+function process(string $command, array $payload): mixed
+{
+}

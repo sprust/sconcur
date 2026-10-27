@@ -5,50 +5,63 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\Worker;
 
 use RuntimeException;
+use SConcur\Tests\Impl\FreePort;
 
 /**
- * Spawns the universal master CLI (bin/sconcur-server) as its own process,
- * supervising the demo HTTP server (tests/servers/http/http-server.php) on a
- * loopback port, so tests drive a real master they fully control (start it, signal
- * it, read its log/state). The master launches workers with the built extension
- * loaded and reusePort on (several workers behind one port).
+ * Spawns a worker master as its own process (tests/servers/worker/master.php, built from a
+ * JSON config the test writes), supervising the demo HTTP server
+ * (tests/servers/http/http-server.php) on a loopback port, so tests drive a real master
+ * they fully control (start it, signal it, read its log/state). The master runs with the
+ * built extension loaded, and its workers — forks of it — share one port, as every server
+ * binds with SO_REUSEPORT.
  */
 class TestWorkerMaster
 {
-    private const string HOST = '127.0.0.1';
+    /**
+     * How long stop() waits for the master to leave on SIGTERM before it kills it: the
+     * workers' shutdownTimeoutMs plus the grace the master gives a SIGKILL plus its own
+     * tick, with room to spare.
+     */
+    protected const float STOP_TIMEOUT_SECONDS = 6.0;
+
+    protected const string HOST = '127.0.0.1';
 
     /** The flat option keys that describe a pool rather than the master. */
-    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
+    protected const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
 
     /** @var resource */
-    private mixed $process;
+    protected mixed $process;
 
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * @param resource $process
      */
-    private function __construct(
+    protected function __construct(
         mixed $process,
-        private readonly int $port,
-        private readonly string $runtimeDir,
-        private readonly string $name,
-        private readonly string $configPath,
-        private readonly string $outputFile,
+        protected readonly int $port,
+        protected readonly string $runtimeDir,
+        protected readonly string $name,
+        protected readonly string $configPath,
+        protected readonly string $outputFile,
     ) {
         $this->process = $process;
     }
 
     /**
      * Starts a master supervising $workers demo workers on a loopback port. The
-     * master is driven by a JSON config file (--configPath); $options set master-level
-     * keys, $server sets the nested server block, $workerArgs are extra raw worker argv.
+     * master is driven by a JSON config file; $options set master-level keys, $server
+     * sets the nested server block, $workerArgs are extra raw worker argv.
      *
      * @param array<string, mixed>      $options       master-level config keys (override defaults)
      * @param array<string, int|string>               $env           extra env for the master (inherited by workers)
      * @param list<string>              $workerArgs    extra worker argv (e.g. ['--maxRequests=3'])
      * @param int|null                  $port          bind this exact port (default: a free one)
      * @param bool                      $waitReachable wait until a worker answers before returning
+     * @param string|null               $masterScript  the script the master runs as, in place of
+     *                                                 tests/servers/worker/master.php: one that
+     *                                                 loads an application before it starts the
+     *                                                 master, say; it is given the config path
      */
     public static function start(
         array $options = [],
@@ -56,6 +69,7 @@ class TestWorkerMaster
         array $workerArgs = [],
         ?int $port = null,
         bool $waitReachable = true,
+        ?string $masterScript = null,
     ): self {
         $port ??= self::freePort();
 
@@ -74,19 +88,15 @@ class TestWorkerMaster
             self::buildConfig([
                 'workerScript' => self::workerScript(),
                 'workerCount'  => 2,
-                // The production default is 10 s per worker, which the CLI turns
-                // into a stop bound of workers × (drain + 2 s) + 5 s — 29 s for
-                // the two here. Nothing in these tests drains for more than
-                // milliseconds, so the budget is cut to keep both a legitimate
-                // stop and the hang detector below in the seconds.
+                // The production default is 10 s per worker. Nothing in these tests
+                // drains for more than milliseconds, so the budget is cut to keep both
+                // a legitimate stop and the hang detector below in the seconds.
                 'shutdownTimeoutMs' => 1_500,
                 'runtimeDir'   => $runtimeDir,
                 'logDir'       => $runtimeDir,
                 'name'         => $name,
-                // Workers must load the built extension; the master itself does not need it.
-                'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
                 // Several workers behind one port: each must enable SO_REUSEPORT.
-                'server'       => ['address' => $address, 'reusePort' => true],
+                'server'       => ['address' => $address],
                 'workerArgs'   => array_values($workerArgs),
                 ...$options,
             ]),
@@ -95,7 +105,7 @@ class TestWorkerMaster
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
-        $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile);
+        $process = self::open([$configPath], $env, $outputFile, $masterScript ?? self::masterScript());
 
         $server = new self(
             process: $process,
@@ -107,12 +117,16 @@ class TestWorkerMaster
         );
 
         if ($waitReachable && !$server->waitUntilReachable()) {
+            // Both, because with logTo=file the master's own output is empty and the reason
+            // — a worker that died on startup, a refused config — is in the journal.
             $diagnostics = $server->masterOutput();
+            $journal     = $server->logText();
 
             $server->stop();
 
             throw new RuntimeException(
-                'The test master did not become reachable (is the extension built?). Output: ' . $diagnostics,
+                'The test master did not become reachable (is the extension built?). Output: ' . $diagnostics
+                . ' Journal: ' . $journal,
             );
         }
 
@@ -132,8 +146,7 @@ class TestWorkerMaster
             'workerScript' => self::workerScript(),
             'workerCount'  => 1,
             'runtimeDir'   => sys_get_temp_dir(),
-            'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
-            'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
+            'server'       => ['address' => self::HOST . ':0'],
             ...$overrides,
         ];
 
@@ -155,7 +168,7 @@ class TestWorkerMaster
      *
      * @return array<string, mixed>
      */
-    private static function buildConfig(array $flat): array
+    protected static function buildConfig(array $flat): array
     {
         // A test that needs several pools writes "groups" itself; the flat keys are the
         // shorthand for the single-pool case, which is most of them.
@@ -185,37 +198,34 @@ class TestWorkerMaster
     }
 
     /**
-     * Runs a one-shot subcommand (start/status/stop) against the given config file to
-     * completion and returns [exitCode, combined-output].
+     * How long a one-shot command may take before the wait gives up.
+     *
+     * Sized above what MasterControl allows a stop to take (15 s), so a
+     * slow-but-legitimate stop is never killed. Everything measured is far under it.
+     * The number is a hang detector, and a hang costs 20 s rather than a run that
+     * never ends.
+     */
+    protected const float COMMAND_TIMEOUT_SECONDS = 20.0;
+
+    /**
+     * Runs a one-shot command against the given config file to completion and returns
+     * [exitCode, combined-output]: `start` runs the master (one that fails to start, or
+     * refuses), `status` and `stop` go through MasterControl (tests/servers/worker/control.php).
      *
      * @param array<string, string> $env
-     * @param list<string>          $argv extra flags after --configPath (e.g. --group=NAME)
      *
      * @return array{int, string}
      */
-    /**
-     * How long a one-shot subcommand may take before the wait gives up.
-     *
-     * Sized above what the CLI itself allows a stop to take with this config —
-     * workers × (shutdownTimeoutMs + 2 s) + 5 s, i.e. 2 × 3.5 + 5 = 12 s — so a
-     * slow-but-legitimate stop is never killed. Everything measured is far under
-     * it: the whole Worker suite is 68 tests in 11 s, its slowest single test 2 s.
-     * The number is a hang detector, and a hang costs 15 s rather than a run that
-     * never ends.
-     */
-    protected const float COMMAND_TIMEOUT_SECONDS = 15.0;
-
     public static function runCommand(
         string $subcommand,
         string $configPath,
         array $env = [],
-        array $argv = [],
     ): array {
-        $argv = [$subcommand, '--configPath=' . $configPath, ...$argv];
-
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 
-        $process = self::open($argv, $env, $outputFile);
+        $process = $subcommand === 'start'
+            ? self::open([$configPath], $env, $outputFile, self::masterScript())
+            : self::open([$subcommand, $configPath], $env, $outputFile, self::controlScript());
 
         // Bounded, because these are one-shot subcommands: start, status, stop.
         // A wait without a deadline turns a subcommand that hangs — a master that
@@ -251,7 +261,7 @@ class TestWorkerMaster
 
         if (isset($timedOut)) {
             throw new RuntimeException(sprintf(
-                'sconcur-master %s did not finish in %.1fs; killed. Output so far: %s',
+                'the test master command %s did not finish in %.1fs; killed. Output so far: %s',
                 $subcommand,
                 self::COMMAND_TIMEOUT_SECONDS,
                 $output === '' ? '<empty>' : trim($output),
@@ -286,20 +296,6 @@ class TestWorkerMaster
         return $this->configPath;
     }
 
-    /**
-     * Rewrites the config file in place, so a `reload` picks the new one up. The flat
-     * shorthand of start() applies here too.
-     *
-     * @param array<string, mixed> $config
-     */
-    public function rewriteConfig(array $config): void
-    {
-        file_put_contents(
-            $this->configPath,
-            (string) json_encode(self::buildConfig($config), JSON_PRETTY_PRINT),
-        );
-    }
-
     public function pid(): int
     {
         return (int) proc_get_status($this->process)['pid'];
@@ -316,7 +312,7 @@ class TestWorkerMaster
     }
 
     /**
-     * The master's own stdout/stderr (CLI errors); the lifecycle journal is the log
+     * The master's own stdout/stderr (errors at startup); the lifecycle journal is the log
      * file, see logText().
      */
     public function masterOutput(): string
@@ -431,7 +427,12 @@ class TestWorkerMaster
     }
 
     /**
-     * Stops the master (SIGKILL if still running) and cleans up. Idempotent.
+     * Stops the master and cleans up. Idempotent.
+     *
+     * Asked to stop first, and only killed when it does not: a master killed outright leaves
+     * its workers orphaned, and while a server notices its parent changed and leaves, a
+     * worker that drives a WaitGroup of its own has no such check and would run on past the
+     * test, for as long as the container lives.
      */
     public function stop(): void
     {
@@ -442,7 +443,11 @@ class TestWorkerMaster
         $this->closed = true;
 
         if ($this->isRunning()) {
-            proc_terminate($this->process, SIGKILL);
+            proc_terminate($this->process, SIGTERM);
+
+            if ($this->waitForExit(timeoutSeconds: self::STOP_TIMEOUT_SECONDS) === null) {
+                proc_terminate($this->process, SIGKILL);
+            }
         }
 
         proc_close($this->process);
@@ -452,7 +457,7 @@ class TestWorkerMaster
         self::removeDir($this->runtimeDir);
     }
 
-    private function waitUntilReachable(): bool
+    protected function waitUntilReachable(): bool
     {
         $deadline = microtime(true) + 5.0;
 
@@ -472,14 +477,17 @@ class TestWorkerMaster
     }
 
     /**
-     * @param list<string>          $argv full argv after the bin path
-     * @param array<string, string> $env  extra env merged over the inherited one
+     * @param list<string>          $argv   argv after the script
+     * @param array<string, string> $env    extra env merged over the inherited one
+     * @param string                $script the script php runs
      *
      * @return resource
      */
-    private static function open(array $argv, array $env, string $outputFile): mixed
+    protected static function open(array $argv, array $env, string $outputFile, string $script): mixed
     {
-        $command = [PHP_BINARY, self::binPath(), ...$argv];
+        // The master takes and sends its signals through the extension, and its workers are
+        // forks of it, so it loads the build under test.
+        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), $script, ...$argv];
 
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -502,22 +510,27 @@ class TestWorkerMaster
         return $process;
     }
 
-    private static function root(): string
+    protected static function root(): string
     {
         return dirname(__DIR__, 3);
     }
 
-    private static function binPath(): string
+    protected static function masterScript(): string
     {
-        return self::root() . '/bin/sconcur-server';
+        return self::root() . '/tests/servers/worker/master.php';
     }
 
-    private static function workerScript(): string
+    protected static function controlScript(): string
+    {
+        return self::root() . '/tests/servers/worker/control.php';
+    }
+
+    protected static function workerScript(): string
     {
         return self::root() . '/tests/servers/http/http-server.php';
     }
 
-    private static function extensionPath(): string
+    protected static function extensionPath(): string
     {
         // The build under test, so a run that spawns its own worker loads the same
         // extension the suite does. Without it a run would answer for one core while
@@ -525,7 +538,7 @@ class TestWorkerMaster
         return getenv('SCONCUR_EXT') ?: self::root() . '/ext/build/sconcur.so';
     }
 
-    private static function makeRuntimeDir(): string
+    protected static function makeRuntimeDir(): string
     {
         $dir = sys_get_temp_dir() . '/sc-master-' . uniqid('', true);
 
@@ -536,14 +549,14 @@ class TestWorkerMaster
         return $dir;
     }
 
-    private static function removeDir(string $dir): void
+    protected static function removeDir(string $dir): void
     {
         if (!is_dir($dir)) {
             return;
         }
 
-        // Recurse: workers write their snapshots into a <runtimeDir>/stats subdir,
-        // so a flat unlink would leave it (and the runtime dir) behind.
+        // Recurse: a test may leave a directory of its own in the runtime dir, and a
+        // flat unlink would leave it (and the runtime dir) behind.
         foreach ((array) glob($dir . '/*') as $entry) {
             if (!is_string($entry)) {
                 continue;
@@ -561,18 +574,8 @@ class TestWorkerMaster
         @rmdir($dir);
     }
 
-    private static function freePort(): int
+    public static function freePort(): int
     {
-        $socket = stream_socket_server('tcp://' . self::HOST . ':0', $errno, $errstr);
-
-        if ($socket === false) {
-            throw new RuntimeException("Could not allocate a port: $errstr");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
+        return FreePort::find();
     }
 }

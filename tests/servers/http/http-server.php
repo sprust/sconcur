@@ -85,11 +85,26 @@ const RABBITMQ_MAX_JOBS = 100000;
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
- *   --maxRequests  --reusePort (0/1)
+ *   --maxRequests
  *
  * Bench-only: --ladder=l1|l2|l2f runs the attribution-ladder loop instead of the
  * normal server (see runLadderServer below).
  */
+
+// A test of the master's restart backoff hands its workers a plan, a line per start, in
+// the file SCONCUR_TEST_START_PLAN names: a start that takes "crash" exits at once with an
+// error, any other line (or an empty plan) serves. One worker at a time takes from it.
+$startPlan = (string) getenv('SCONCUR_TEST_START_PLAN');
+
+if ($startPlan !== '') {
+    $steps = file($startPlan, FILE_IGNORE_NEW_LINES) ?: [];
+
+    file_put_contents($startPlan, implode('', array_map(static fn(string $step): string => $step . PHP_EOL, array_slice($steps, 1))));
+
+    if (($steps[0] ?? '') === 'crash') {
+        exit(1);
+    }
+}
 
 // Attribution-ladder bench modes: --ladder=l1 answers every request 200 "ok"
 // inline from the loop (no
@@ -131,9 +146,10 @@ if ($ladderMode !== '') {
 $psr17Factory = new Psr17Factory();
 
 // Build the server from argv: each --name=value maps to the matching HttpServer
-// constructor parameter. Under WorkerMaster the injected --masterPid wires the
-// orphan check (the worker self-terminates if its master dies); without it the
-// check is off (standalone run).
+// constructor parameter. Under the test master (tests/servers/worker/master.php)
+// the injected --masterPid wires the orphan check (the worker self-terminates if
+// its master dies); in any fork of a master the check is on without it
+// (WorkerContext), and in a standalone run it is off.
 $server = HttpServer::fromArgs(
     argv: $_SERVER['argv'],
     serverRequestFactory: $psr17Factory,
@@ -1288,16 +1304,11 @@ function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
  */
 function runLadderServer(string $mode, array $argv): void
 {
-    $address   = '0.0.0.0:7832';
-    $reusePort = false;
+    $address = '0.0.0.0:7832';
 
     foreach ($argv as $argument) {
         if (str_starts_with($argument, '--address=')) {
             $address = substr($argument, strlen('--address='));
-        }
-
-        if (str_starts_with($argument, '--reusePort=')) {
-            $reusePort = substr($argument, strlen('--reusePort=')) === '1';
         }
     }
 
@@ -1323,7 +1334,6 @@ function runLadderServer(string $mode, array $argv): void
             maxRequestBody: 10_485_760,
             maxConcurrency: 0,
             handlerTimeoutMs: 60_000,
-            reusePort: $reusePort,
             telemetrySocket: '',
             serverName: 'sconcur-ladder',
             telemetryIntervalMs: 0,

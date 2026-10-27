@@ -5,14 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
-use SConcur\Worker\WorkerOutputLine;
-use SConcur\Worker\WorkerProcess;
+use SConcur\Process\ProcessSignalEnum;
+use SConcur\Tests\Impl\Worker\ProcOpenWorkerProcess;
 
 /**
- * Unit coverage of WorkerProcess: it spawns a short `php -r` script (no extension
- * needed), so a real child process exercises liveness, the cached exit outcome,
- * signal delivery (the pid is php itself, not a shell) and line-buffered output
- * draining including the no-newline tail flushed on exit.
+ * Unit coverage of WorkerProcess, through a php started on a short `php -r` script (no
+ * extension needed, see ProcOpenWorkerProcess), so a real child process exercises
+ * liveness, the cached exit outcome, signal delivery and line-buffered output draining
+ * including the no-newline tail flushed on exit.
  */
 class WorkerProcessTest extends TestCase
 {
@@ -70,7 +70,7 @@ class WorkerProcessTest extends TestCase
         try {
             self::assertTrue($process->isRunning());
 
-            $process->signal(SIGTERM);
+            $process->signal(ProcessSignalEnum::Terminate);
 
             self::assertTrue($this->waitForExit($process), 'the signalled worker should terminate');
 
@@ -162,74 +162,64 @@ class WorkerProcessTest extends TestCase
         }
     }
 
-    public function testWorkerInheritsNoneOfTheMasterDescriptors(): void
+    /**
+     * The master reads what the worker says about itself off its heartbeat pipe: any byte
+     * is the PHP thread alive, and two of them say more.
+     */
+    public function testReadsTheMarksTheWorkerPutsOnItsPipe(): void
     {
-        // Stand in for what the master holds while it spawns: the telemetry collector's
-        // unix listener, an accepted worker connection and a log file. proc_open leaves
-        // every one of them open in the child unless the spawn shuts them out.
-        $socketPath = sys_get_temp_dir() . '/sconcur-fd-guard-' . getmypid() . '.sock';
-
-        @unlink($socketPath);
-
-        $listener = stream_socket_server('unix://' . $socketPath, $errorNumber, $errorMessage);
-
-        self::assertIsResource($listener, 'the stand-in collector must bind: ' . (string) $errorMessage);
-
-        $client   = stream_socket_client('unix://' . $socketPath);
-        $accepted = stream_socket_accept($listener, 1);
-        $logFile  = fopen($socketPath . '.log', 'w');
-
         $process = $this->spawn(
-            'foreach (scandir("/proc/self/fd") as $entry) {'
-            . ' if (!ctype_digit($entry) || (int) $entry < 3) { continue; }'
-            . ' $target = @readlink("/proc/self/fd/" . $entry);'
-            . ' if ($target !== false) { echo $target, "\n"; } }',
+            '$pipe = fopen("php://fd/3", "w");'
+            . ' fwrite($pipe, "\x01\x02"); usleep(200000);'
+            . ' fwrite($pipe, "\x03"); usleep(200000);',
         );
+
+        try {
+            self::assertFalse($process->isReady(), 'nothing is read before the master drains the pipe');
+
+            $deadline = microtime(true) + 5.0;
+
+            while (microtime(true) < $deadline && !$process->isRecycling()) {
+                $process->drainHeartbeat();
+
+                usleep(20_000);
+            }
+
+            self::assertTrue($process->isReady(), 'the worker said it is up');
+            self::assertTrue($process->isRecycling(), 'the worker said it is leaving at its limit');
+            self::assertNotNull($process->heartbeatAgeSeconds(), 'every mark says the thread is alive');
+        } finally {
+            $this->waitForExit($process);
+
+            $process->close();
+        }
+    }
+
+    public function testAWorkerThatOnlyMarksItselfAliveIsNotUp(): void
+    {
+        $process = $this->spawn('fwrite(fopen("php://fd/3", "w"), "\x01"); usleep(200000);');
 
         try {
             self::assertTrue($this->waitForExit($process));
 
-            $targets = array_map(
-                static fn(WorkerOutputLine $line): string => $line->line,
-                array_filter($process->drainFinalOutput(), static fn(WorkerOutputLine $line): bool => !$line->isError),
-            );
+            $process->drainHeartbeat();
 
-            $inherited = array_values(array_filter(
-                $targets,
-                static fn(string $target): bool => str_starts_with($target, 'socket:') || str_ends_with($target, '.sock.log'),
-            ));
-
-            self::assertSame([], $inherited, 'the worker must inherit no socket and no file of the master');
+            self::assertNotNull($process->heartbeatAgeSeconds());
+            self::assertFalse($process->isReady());
+            self::assertFalse($process->isRecycling());
         } finally {
             $process->close();
-
-            fclose($logFile);
-
-            if (is_resource($accepted)) {
-                fclose($accepted);
-            }
-
-            if (is_resource($client)) {
-                fclose($client);
-            }
-
-            fclose($listener);
-
-            @unlink($socketPath);
-            @unlink($socketPath . '.log');
         }
     }
 
-    private function spawn(string $code): WorkerProcess
+    protected function spawn(string $code): ProcOpenWorkerProcess
     {
-        return new WorkerProcess(
+        return new ProcOpenWorkerProcess(
             command: [PHP_BINARY, '-r', $code],
-            cwd: sys_get_temp_dir(),
-            env: getenv(),
         );
     }
 
-    private function waitForExit(WorkerProcess $process, float $timeoutSeconds = 5.0): bool
+    protected function waitForExit(ProcOpenWorkerProcess $process, float $timeoutSeconds = 5.0): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

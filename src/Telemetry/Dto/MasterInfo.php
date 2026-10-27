@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Dto;
 
 /**
- * Process metrics of the worker master itself (a plain PHP supervisor, no extension):
+ * Process metrics of the worker master itself (it loads the extension but never starts
+ * its runtime):
  * its pid, serve start, uptime, resident set size and CPU usage. Sampled on the
  * master side and attached to the aggregate so the panel shows the supervisor next to
  * its pool. startedAt is rendered as a UTC datetime.

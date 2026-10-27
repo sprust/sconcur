@@ -17,8 +17,8 @@
 //! copy-on-write image already holds those pages, and the process either
 //! rebuilds and runs, or exits.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex, Once, RwLock};
 
 use crate::features::amqp;
 use crate::features::files;
@@ -32,6 +32,9 @@ use crate::features::sql;
 use crate::features::wsclient;
 use crate::features::wsserver;
 use crate::handler::Handler;
+use crate::logger::Logger;
+use crate::states::States;
+use crate::stats;
 
 pub struct Core {
     runtime: tokio::runtime::Runtime,
@@ -69,9 +72,31 @@ pub struct Core {
     /// the blocking commands hold, and the live subscriptions — for the same
     /// reason: every one of them is a socket this process opened.
     redis: redis::Registries,
+    /// The streams `next()` drives — cursor batches, request-body chunks, client
+    /// message streams — for the same reason: each reads from a connection this
+    /// process opened, and the map sits behind a mutex a runtime thread may have
+    /// held at the moment of a fork.
+    states: States,
+    /// The telemetry push loop's registrations, for the same reason: a child that
+    /// inherited them would find the loop marked as running, start none of its own
+    /// and report nothing.
+    stats: stats::Registry,
+    /// The access-log sink, for the same reason: its writer is a thread, and a child
+    /// has none, so the lines it queued to an inherited channel would never be
+    /// written.
+    logger: Logger,
 }
 
-static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
+/// The core of this process, null until the first build. A plain pointer rather
+/// than a lock around one: a runtime thread reads it on every call into a
+/// registry, and a read lock held by one at the moment of a fork would be held
+/// forever in the child, where the rebuild then waits on it.
+static CORE: AtomicPtr<Core> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Serializes the builds. Only the PHP thread ever builds: the runtime does not
+/// exist before the first build, and after a fork the forking thread is the only
+/// one left. No other thread can be holding this when a fork happens.
+static BUILD: Mutex<()> = Mutex::new(());
 
 /// Set by the `pthread_atfork` child handler. Checked with a relaxed load on
 /// every access — one atomic against a crossing measured in microseconds.
@@ -87,27 +112,41 @@ extern "C" fn on_fork_in_child() {
 }
 
 pub fn get() -> &'static Core {
-    if !FORKED_IN_CHILD.load(Ordering::Relaxed) {
-        if let Some(core) = *CORE.read().unwrap() {
-            return core;
-        }
+    built().unwrap_or_else(build)
+}
+
+/// The core this process has built, or None when it has built none: never used,
+/// or forked from a process that had one and not used since.
+///
+/// For the exports that only act on work already running. With none running
+/// there is nothing to act on, and building a core to find that out would start
+/// the runtime's threads in a process that may be about to fork.
+pub fn built() -> Option<&'static Core> {
+    if FORKED_IN_CHILD.load(Ordering::Relaxed) {
+        return None;
     }
 
-    build()
+    let core = CORE.load(Ordering::Acquire);
+
+    // Set once from a leaked box and only ever replaced by another one, so a
+    // non-null pointer is valid for the life of the process.
+    unsafe { core.as_ref() }
 }
 
 #[cold]
 fn build() -> &'static Core {
-    let mut slot = CORE.write().unwrap();
+    // A build that panicked leaves nothing half-done behind it: the pointer is
+    // only stored once the core is whole.
+    let _build = BUILD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     // Racing callers: the first one through clears the flag and rebuilds, the
     // rest find the fresh core already in the slot.
     if FORKED_IN_CHILD.swap(false, Ordering::Relaxed) {
-        // Drop the reference, not the value. See the module comment.
-        *slot = None;
+        // Forget the pointer, not the value. See the module comment.
+        CORE.store(std::ptr::null_mut(), Ordering::Release);
     }
 
-    if let Some(core) = *slot {
+    if let Some(core) = unsafe { CORE.load(Ordering::Acquire).as_ref() } {
         return core;
     }
 
@@ -120,7 +159,7 @@ fn build() -> &'static Core {
 
     let core: &'static Core = Box::leak(Box::new(Core::new()));
 
-    *slot = Some(core);
+    CORE.store(core as *const Core as *mut Core, Ordering::Release);
 
     core
 }
@@ -198,6 +237,9 @@ impl Core {
             files: files::writer::Registries::new(),
             amqp: amqp::Registries::new(),
             redis: redis::Registries::new(),
+            states: States::new(),
+            stats: stats::Registry::new(),
+            logger: Logger::new(),
         }
     }
 
@@ -251,6 +293,18 @@ impl Core {
 
     pub fn redis(&'static self) -> &'static redis::Registries {
         &self.redis
+    }
+
+    pub fn states(&'static self) -> &'static States {
+        &self.states
+    }
+
+    pub fn stats(&'static self) -> &'static stats::Registry {
+        &self.stats
+    }
+
+    pub fn logger(&'static self) -> &'static Logger {
+        &self.logger
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

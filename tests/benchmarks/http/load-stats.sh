@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# All-features load + resource benchmark. Spawns N demo HTTP-server processes
-# (SO_REUSEPORT, one per core) in the `php` container, drives them with wrk on the
-# /all route (which fans out across EVERY async I/O feature — Sleeper, MongoDB,
-# MySQL, PostgreSQL, HTTP-client — concurrently per request), and samples CPU/memory
+# All-features load + resource benchmark. Starts a pool of N demo HTTP-server workers
+# (SO_REUSEPORT, one per core) under a worker master in the `php` container — the way a
+# pool runs in production: the master loads what the server builds on and forks the
+# workers (tests/benchmarks/lib/master-pool.sh) — drives them with wrk on the
+# /all route (MongoDB, MySQL and PostgreSQL, two calls each, the three blocks run
+# concurrently per request), and samples CPU/memory
 # of the server and backend containers throughout, plus per-worker RSS (leak check).
 #
 # Same honesty rules as throughput.sh: servers and the load generator are pinned
@@ -32,6 +34,8 @@
 #   the workers within them, which is the honest comparison for "should a
 #   deployment pin?" because every arm then has the same core budget; 0 = leave
 #   them unpinned, which is what the worker master actually does in production.
+#   A worker pins itself as it starts, before its runtime does (the master's
+#   "slotCpus"); under group the master is confined and its forks inherit it.
 #   NOTE: rr-load-stats.sh and swoole-load-stats.sh pin their stack the way
 #   `group` does, so a comparison against them wants PIN_SERVERS=group here —
 #   the default (1) measures this stack ~7% below the others' placement
@@ -73,11 +77,12 @@ MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 # SERVERS — the worker-count ladder in docs/benchmarks.md walks it).
 DB_POOL_SIZE=${DB_POOL_SIZE:-9}
 # Dispatch experiment. DISTINCT_PORTS=1 binds
-# worker i to PORT+1+i without SO_REUSEPORT, so a proxy (nginx) can sit in front
+# worker i to a port of its own, PORT+1+i, so a proxy (nginx) can sit in front
 # on PORT itself and balance per request; the readiness probe then goes to the
-# first worker, not to PORT. WORKER_LOGS=1 keeps each worker's access log (one
-# line per request, with the handling time) in its own file instead of dropping
-# it — that is how the per-worker request/latency spread is measured.
+# first worker, not to PORT. WORKER_LOGS=1 keeps the workers' access lines (one
+# per request, with the handling time and the worker's slot) in the master's access
+# file instead of dropping them — that is how the per-worker request/latency spread
+# is measured.
 DISTINCT_PORTS=${DISTINCT_PORTS:-0}
 WORKER_LOGS=${WORKER_LOGS:-0}
 # WRK_SCRIPT: a wrk Lua script (host path) for mixed load profiles; the URL still
@@ -93,7 +98,12 @@ EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err
-WORKERLOGPREFIX=/tmp/sc-http-load-$PORT-w
+# The pool's name: its master's directory, and the title its workers show
+# (`sconcur-server: load-<port> #<slot>`), by which they are found.
+POOL=load-$PORT
+
+# shellcheck source=../lib/master-pool.sh
+. tests/benchmarks/lib/master-pool.sh
 
 command -v wrk >/dev/null || { echo "wrk not found on host (apt-get install wrk)"; exit 1; }
 [ -z "$WRK_SCRIPT" ] || [ -f "$WRK_SCRIPT" ] || { echo "WRK_SCRIPT not found: $WRK_SCRIPT"; exit 1; }
@@ -143,11 +153,12 @@ fi
 WATCH=$(printf 'php\t%s\nmongodb\t%s\nmysql\t%s\npostgres\t%s\n%s\t%s\n' "$PHP_CID" "$MONGO_CID" "$MYSQL_CID" "$PG_CID" "${WATCH_EXTRA:-extra}" "$EXTRA_CID" | awk -F'\t' '$2!=""')
 WATCH_CIDS=$(printf '%s\n' "$WATCH" | awk -F'\t' '{print $2}')
 
-# SIGTERM first, the way production stops a worker, and then wait for it to go.
-# One still there after STOP_TIMEOUT seconds is killed and named on stderr: a
-# worker that survives its SIGTERM keeps its SO_REUSEPORT socket and quietly
-# takes a share of the next run's traffic, and once the next run has rewritten
-# the pidfile nothing would stop it any more. A zombie counts as gone.
+# SIGTERM to the master first, the way production stops a pool, and then wait for
+# it to go: it drains its workers and leaves after them. One still there after
+# STOP_TIMEOUT seconds is killed and named on stderr; its workers see their master
+# gone and leave on their own, and a worker that did not would keep its
+# SO_REUSEPORT socket and take a share of the next run's traffic — which is what
+# kill_stray at the next start is for. A zombie counts as gone.
 STOP_TIMEOUT=${STOP_TIMEOUT:-30}
 
 stop_servers() {
@@ -165,7 +176,7 @@ stop_servers() {
             done
             [ -z "$alive" ] && break
             if [ "$waited" -ge '"$STOP_TIMEOUT"' ]; then
-                echo "WARNING: worker(s)$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
+                echo "WARNING: master$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
                 for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
                 break
             fi
@@ -176,32 +187,12 @@ stop_servers() {
     ' || true
 }
 
-# A server left on one of this run's ports by an earlier run whose pidfile is
-# gone (an interrupted run, or one whose stop above had to give up) would join
-# the SO_REUSEPORT group or hold a port a proxy needs. Killed and named before
-# anything starts. No procps in the container, so /proc is scanned, and the
-# scanning shell itself ($$) is skipped: its own cmdline holds the match string.
+# A worker left on this run's port by an earlier run whose pidfile is gone (an
+# interrupted run, or one whose stop above had to give up) would join the
+# SO_REUSEPORT group or hold a port a proxy needs. Killed and named before anything
+# starts.
 kill_stray() {
-    $DOCKER_COMPOSE exec -T php sh -c '
-        self=$$
-        ports="'"$PORT"'"
-        i=1
-        while [ "$i" -le '"$SERVERS"' ]; do ports="$ports $(( '"$PORT"' + i ))"; i=$(( i + 1 )); done
-        for d in /proc/[0-9]*; do
-            pid=${d#/proc/}
-            [ "$pid" = "$self" ] && continue
-            cmd=$(tr "\\0" " " < "$d/cmdline" 2>/dev/null) || continue
-            case "$cmd" in php\ *) ;; *) continue ;; esac
-            for port in $ports; do
-                case "$cmd" in
-                    *"--address=0.0.0.0:$port "*)
-                        echo "WARNING: stray server $pid on port $port from an earlier run; killed" >&2
-                        kill -9 "$pid" 2>/dev/null || true
-                        ;;
-                esac
-            done
-        done
-    ' || true
+    master_pool_kill_stray "$POOL"
 }
 
 # The /all and /db* routes write a row per request, and the databases live on a
@@ -292,14 +283,15 @@ case "$PIN_SERVERS" in
     1)        placement="one logical CPU each, cores 0-$(( SERVERS - 1 ))" ;;
     physical) placement="one physical core each (sibling pairs), cores 0-$(( SERVERS - 1 ))" ;;
     group)    placement="pool confined to cores 0-$(( SERVERS - 1 )), scheduler places" ;;
-    *)        placement="unpinned, as the worker master runs them" ;;
+    *)        placement="unpinned, as the worker master runs them by default" ;;
 esac
 
 if (( DISTINCT_PORTS == 1 )); then
-    echo "   server procs    : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), no reusePort)"
+    echo "   workers         : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), a port each)"
 else
-    echo "   server procs    : $SERVERS  (reusePort)"
+    echo "   workers         : $SERVERS  (SO_REUSEPORT)"
 fi
+echo "   launch          : forks of a worker master that loaded the server's code first"
 echo "   placement       : $placement  (PIN_SERVERS=$PIN_SERVERS)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
@@ -311,53 +303,36 @@ else
 fi
 echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
 [ -n "$WRK_SCRIPT" ] && echo "   wrk script      : $WRK_SCRIPT  (mixed profile; ROUTE used only for the readiness probe)"
-[ "$WORKER_LOGS" = "1" ] && echo "   worker logs     : ${WORKERLOGPREFIX}<i>.log  (access log per worker)"
+[ "$WORKER_LOGS" = "1" ] && echo "   worker logs     : $(master_pool_dir "$POOL")/$POOL-access-<date>.log  (access lines with the slot)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
 
 stop_servers
 kill_stray
 
-# Spawn one server per core (synchronous exec so the pidfile is fully written).
-# With DISTINCT_PORTS each worker gets its own port and no SO_REUSEPORT, so a
-# proxy in front decides the placement instead of the kernel.
-$DOCKER_COMPOSE exec -T php sh -c '
-    : > "'"$PIDFILE"'"
-    : > "'"$STDERRLOG"'"
-    rm -f "'"$WORKERLOGPREFIX"'"*.log
-    i=0
-    while [ "$i" -lt "'"$SERVERS"'" ]; do
-        port='"$PORT"'
-        reuse=1
-        if [ "'"$DISTINCT_PORTS"'" = "1" ]; then
-            port=$(( '"$PORT"' + 1 + i ))
-            reuse=0
-        fi
+# One group of SERVERS workers on the port, with no access lines unless WORKER_LOGS
+# asks for them. The master's pid goes to the pidfile: SIGTERM to it drains the whole
+# pool, and its workers leave with it.
+POOL_MASTER_CPUS=""
+POOL_SLOT_CPUS=""
+case "$PIN_SERVERS" in
+    group)    POOL_MASTER_CPUS="0-$(( SERVERS - 1 ))" ;;
+    1|physical) POOL_SLOT_CPUS="$PIN_CPULISTS" ;;
+esac
+POOL_ACCESS_LOG=off
+[ "$WORKER_LOGS" = "1" ] && POOL_ACCESS_LOG=file
 
-        out=/dev/null
-        if [ "'"$WORKER_LOGS"'" = "1" ]; then
-            out="'"$WORKERLOGPREFIX"'$i.log"
-        fi
+POOL_MAX_CONCURRENCY=$MAXCONCURRENCY \
+POOL_ARGS="${SERVER_ARGS:-}" \
+POOL_ENV="SCONCUR_DB_POOL_SIZE=$DB_POOL_SIZE ${SERVER_ENV:-}" \
+POOL_MASTER_CPUS=$POOL_MASTER_CPUS \
+POOL_SLOT_CPUS=$POOL_SLOT_CPUS \
+POOL_DISTINCT_PORTS=$DISTINCT_PORTS \
+POOL_ACCESS_LOG=$POOL_ACCESS_LOG \
+    master_pool_start "$POOL" "$SCRIPT" "$SERVERS" "0.0.0.0:$PORT" "$PIDFILE" "$STDERRLOG"
 
-        # The i-th entry of the list the host computed, or nothing when the
-        # list is empty (PIN_SERVERS=0).
-        pin=""
-        if [ -n "'"$PIN_CPULISTS"'" ]; then
-            set -- '"$PIN_CPULISTS"'
-            skip=$i
-            while [ "$skip" -gt 0 ]; do shift; skip=$(( skip - 1 )); done
-            pin="taskset -c $1"
-        fi
-
-        SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
-        env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:$port --reusePort=$reuse --maxConcurrency='"$MAXCONCURRENCY"' \
-            '"${SERVER_ARGS:-}"' \
-            >"$out" 2>>"'"$STDERRLOG"'" &
-        echo $! >> "'"$PIDFILE"'"
-        i=$(( i + 1 ))
-    done
-'
+# The pids whose memory is summed: the workers, by their title.
+WORKER_PIDS=$(master_pool_worker_pids "$POOL")
 
 # Wait until /all answers (the lazy feature init + backend connects happen here).
 ready=0
@@ -368,6 +343,8 @@ done
 if (( ready != 1 )); then
     echo "servers did not become reachable / $ROUTE did not answer on $IP:$PROBE_PORT" >&2
     $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$STDERRLOG"'" 2>/dev/null' >&2 || true
+    # The workers' output is in the master's journal.
+    master_pool_journal_tail "$POOL"
     exit 1
 fi
 echo "servers up; $ROUTE answers. starting load + sampling..."
@@ -388,10 +365,10 @@ SAMPLE_START=$(date +%s)
         elapsed=$(( $(date +%s) - SAMPLE_START ))
         total_kb=$($DOCKER_COMPOSE exec -T php sh -c '
             total=0
-            while read -r pid; do
+            for pid in $('"$WORKER_PIDS"'); do
                 kb=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null)
                 [ -n "$kb" ] && total=$(( total + kb ))
-            done < "'"$PIDFILE"'"
+            done
             echo "$total"
         ' 2>/dev/null | tr -d "[:space:]") || true
         [ -n "$total_kb" ] && echo "$elapsed $total_kb" >> "$RSS"
@@ -495,10 +472,14 @@ if [ "$WORKER_LOGS" = "1" ]; then
     echo "------------------------------------------------------------------"
     printf '%-8s %10s %8s %11s %11s %11s\n' "worker" "requests" "heavy" "fast p50" "fast p90" "fast p99"
 
+    # Every worker's lines are in the one access file; the sixth field is the worker's
+    # "<group>#<slot>".
+    ACCESS=$($DOCKER_COMPOSE exec -T php sh -c 'cat "'"$(master_pool_dir "$POOL")"'"/'"$POOL"'-access-*.log 2>/dev/null' || true)
+
     COUNTS=$(mktemp)
     i=0
     while (( i < SERVERS )); do
-        LOG=$($DOCKER_COMPOSE exec -T php sh -c 'cat "'"$WORKERLOGPREFIX"'"'"$i"'".log" 2>/dev/null' || true)
+        LOG=$(printf '%s\n' "$ACCESS" | awk -v slot="$POOL#$i" '$6 == slot')
 
         total=$(printf '%s\n' "$LOG" | awk 'NF' | wc -l)
         heavy=$(printf '%s\n' "$LOG" | awk -v fp="$FAST_PATH" 'NF && $3 != fp' | wc -l)

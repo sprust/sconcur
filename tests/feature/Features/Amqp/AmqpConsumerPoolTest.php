@@ -39,7 +39,6 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                                 ['name' => $emails->name(), 'coroutineCount' => 1],
                             ],
                             'prefetchCount' => 1,
-                            'maxMessages'   => 6,
                         ],
                     ],
                 ],
@@ -65,13 +64,18 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                 $handled,
             );
 
-            // maxMessages ends the run, and with restartPolicy=never the master follows.
-            // The line lands after the last delivery, so it is waited for rather than
-            // read off the journal the moment the sixth message shows up.
+            // Stopped from outside rather than by maxMessages: under a master the limit is
+            // spread over up to half again as many messages, so it would not end the run
+            // at six. A stop ends it the way a deploy does, and the tally says nothing was
+            // left half-done.
+            $master->signal(SIGTERM);
+
             self::assertTrue(
                 $this->waitForLine($master, 'consumer finished handled=6'),
                 'the worker must report its tally and exit: ' . $master->logText(),
             );
+
+            self::assertSame(0, $master->waitForExit(10.0), 'the master must stop cleanly');
         } finally {
             $master->stop();
         }
@@ -112,6 +116,63 @@ class AmqpConsumerPoolTest extends AmqpTestCase
 
             self::assertStringContainsString('orders-pool #0', $master->logText());
             self::assertStringContainsString('start groups=1 workers=1', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * maxRuntimeSeconds is a life limit like maxMessages: the worker that reaches it says
+     * so, and under OnFailure the master replaces it rather than taking its clean exit
+     * for the end of the job.
+     */
+    public function testAConsumerAtItsRuntimeLimitIsReplacedUnderOnFailure(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'one');
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'groups' => [
+                    [
+                        'name'         => 'consumers',
+                        'workerScript' => self::consumerScript(),
+                        'workerCount'  => 1,
+                        'server'       => [
+                            'queues'            => [['name' => $queue->name()]],
+                            'maxRuntimeSeconds' => 1,
+                        ],
+                    ],
+                ],
+                'restartPolicy' => 'on-failure',
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            $this->waitForHandledLines($master, expected: 1);
+
+            self::assertTrue(
+                $this->waitForLine($master, 'stop accepting (reason=limit, maxRuntimeSeconds=1)'),
+                'the worker must stop at its runtime limit: ' . $master->logText(),
+            );
+
+            self::assertTrue(
+                $this->waitForLine($master, 'its limit;'),
+                'the master must replace a worker that stopped at its limit: ' . $master->logText(),
+            );
+
+            self::assertStringNotContainsString('not restarting', $master->logText());
+
+            $this->publishToQueue($channel, $queue->name(), 'two');
+
+            self::assertSame(
+                ['handled one', 'handled two'],
+                $this->waitForHandledLines($master, expected: 2),
+            );
         } finally {
             $master->stop();
         }

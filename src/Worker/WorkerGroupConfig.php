@@ -4,194 +4,138 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use Closure;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 
 /**
- * One pool inside a master: a worker script, how many processes of it to keep up, and
- * the arguments they get. A master runs several, and they need not be alike — an HTTP
- * server pool and three queue-consumer pools live under one supervisor, one lock and
- * one journal.
+ * One pool inside a master: a role, how many processes run it, and how they are kept up.
+ * A master runs several, and they need not be alike — an HTTP server pool and a pool of
+ * queue consumers live under one supervisor, one lock and one journal.
  *
- * A group says nothing about what its workers do. `server` is forwarded to their argv
- * as it stands (see argumentFlags), which is what keeps the master usable by any
- * worker script that reads `--key=value`.
+ * The role is what a worker of the group does: a closure the worker calls right after its
+ * fork, with everything the master's process had loaded in its memory. It builds a server,
+ * a consumer or a loop of its own and runs it; the worker leaves when the role returns.
  */
 readonly class WorkerGroupConfig
 {
-    /** The keys a group accepts; anything else is a typo rather than a setting. */
-    protected const array KNOWN_KEYS = [
-        'name',
-        'workerScript',
-        'workerCount',
-        'phpBinary',
-        'phpArgs',
-        'workerArgs',
-        'env',
-        'restartPolicy',
-        'shutdownTimeoutMs',
-        'restartBackoffMs',
-        'maxRestartBackoffMs',
-        'watchdogTimeoutMs',
-        'server',
-    ];
+    /**
+     * The shortest watchdog threshold that can be honoured. A worker marks itself alive at
+     * most twice a second (Scheduler::markAlive), so anything near that reads an ordinary
+     * gap between two marks as a hang and kills every worker of the group on sight —
+     * including the replacements, forever. Ten marks' worth leaves room for a GC pause, a
+     * descheduled process and the master's own tick.
+     */
+    public const int MIN_WATCHDOG_TIMEOUT_MS = 5_000;
 
     /**
-     * @param array<string, mixed>  $server     worker parameters, expanded into argv flags
-     * @param list<string>          $phpArgs    interpreter flags for this group's workers
-     * @param list<string>          $workerArgs extra raw worker argv flags
-     * @param array<string, string> $env        extra env merged over the inherited one
+     * The shortest wait for a worker to say it is up that is accepted. A serve loop says it
+     * is up after its first wait for work, which may take a quarter of a second on an idle
+     * server.
+     */
+    public const int MIN_READY_TIMEOUT_MS = 1_000;
+
+    /**
+     * @param string                       $name                what the journal, the state file and the
+     *                                                          telemetry call the group: letters, digits,
+     *                                                          ".", "_" and "-"
+     * @param Closure(WorkerContext): void $role                what a worker of the group runs, see above
+     * @param int                          $workerCount         how many workers to keep up; 0 is one per logical CPU
+     * @param RestartPolicy                $restartPolicy       which exits are followed by a new worker
+     * @param int                          $shutdownTimeoutMs   how long a stopping worker may drain before it is
+     *                                                          killed
+     * @param int                          $restartBackoffMs    the first wait before restarting a worker that
+     *                                                          died soon after it started, doubled with each
+     *                                                          such death in a row
+     * @param int                          $maxRestartBackoffMs the longest that wait grows to
+     * @param int                          $watchdogTimeoutMs   how long a worker's PHP thread may go without
+     *                                                          marking itself alive before it is killed: 0 is
+     *                                                          off, anything else at least
+     *                                                          MIN_WATCHDOG_TIMEOUT_MS
+     * @param int                          $readyTimeoutMs      a worker that dies before it says it is up, and
+     *                                                          within this long, failed to start; at least
+     *                                                          MIN_READY_TIMEOUT_MS
+     * @param AccessLogTarget              $accessLog           where the workers write their access lines
+     * @param array<string, string>        $env                 what a worker's environment adds to the master's
      */
     public function __construct(
         public string $name,
-        public string $workerScript,
-        public int $workerCount,
-        public string $phpBinary,
-        public array $phpArgs,
-        public array $workerArgs,
-        public array $env,
-        public RestartPolicy $restartPolicy,
-        public int $shutdownTimeoutMs,
-        public int $restartBackoffMs,
-        public int $maxRestartBackoffMs,
-        public int $watchdogTimeoutMs,
-        public array $server,
+        public Closure $role,
+        public int $workerCount = 0,
+        public RestartPolicy $restartPolicy = RestartPolicy::Always,
+        public int $shutdownTimeoutMs = 10_000,
+        public int $restartBackoffMs = 200,
+        public int $maxRestartBackoffMs = 30_000,
+        public int $watchdogTimeoutMs = 60_000,
+        public int $readyTimeoutMs = 30_000,
+        public AccessLogTarget $accessLog = AccessLogTarget::Stdout,
+        public array $env = [],
     ) {
-    }
-
-    /**
-     * Reads one group, falling back to the master-wide defaults for what it does not
-     * say itself.
-     *
-     * @param array<string, mixed> $data
-     */
-    public static function fromArray(array $data, MasterDefaults $defaults, int $index): self
-    {
-        $unknown = array_diff(array_keys($data), self::KNOWN_KEYS);
-
-        if ($unknown !== []) {
-            throw new InvalidConfigException(
-                message: sprintf(
-                    'config: groups[%d] has unknown key(s): %s',
-                    $index,
-                    implode(', ', array_map(strval(...), $unknown)),
-                ),
-            );
-        }
-
-        $name = (string) ($data['name'] ?? '');
-
-        if ($name === '') {
-            throw new InvalidConfigException(
-                message: sprintf('config: groups[%d] requires a "name"', $index),
-            );
-        }
-
-        // The name reaches the journal and the --group flag of the CLI, so it is kept to
-        // the same charset the master's own name is.
+        // The name reaches the journal and file names, so it is kept to a safe charset.
         if (preg_match('/^[A-Za-z0-9._-]+$/', $name) !== 1) {
             throw new InvalidConfigException(
+                message: sprintf('group "%s": the name may contain only letters, digits, ".", "_" and "-"', $name),
+            );
+        }
+
+        $counts = [
+            'workerCount'         => $workerCount,
+            'shutdownTimeoutMs'   => $shutdownTimeoutMs,
+            'restartBackoffMs'    => $restartBackoffMs,
+            'maxRestartBackoffMs' => $maxRestartBackoffMs,
+        ];
+
+        foreach ($counts as $setting => $value) {
+            if ($value < 0) {
+                throw new InvalidConfigException(
+                    message: sprintf('group "%s": %s must be >= 0', $name, $setting),
+                );
+            }
+        }
+
+        // Refused rather than clamped: a threshold below the floor is a misunderstanding of
+        // what the number means, and serving a different one in silence would hide it.
+        if ($watchdogTimeoutMs !== 0 && $watchdogTimeoutMs < self::MIN_WATCHDOG_TIMEOUT_MS) {
+            throw new InvalidConfigException(
                 message: sprintf(
-                    'config: groups[%d] name "%s" may contain only letters, digits, ".", "_" and "-"',
-                    $index,
+                    'group "%s": watchdogTimeoutMs must be 0 (off) or at least %dms',
                     $name,
+                    self::MIN_WATCHDOG_TIMEOUT_MS,
                 ),
             );
         }
 
-        $workerScript = (string) ($data['workerScript'] ?? '');
-
-        if ($workerScript === '') {
+        // There is no "off": a zero would count every worker that starts as a failed start.
+        if ($readyTimeoutMs < self::MIN_READY_TIMEOUT_MS) {
             throw new InvalidConfigException(
-                message: sprintf('config: group "%s" requires a "workerScript"', $name),
+                message: sprintf(
+                    'group "%s": readyTimeoutMs must be at least %dms',
+                    $name,
+                    self::MIN_READY_TIMEOUT_MS,
+                ),
             );
         }
+    }
 
-        $workerCount = (int) ($data['workerCount'] ?? 0);
-
-        if ($workerCount < 0) {
-            throw new InvalidConfigException(
-                message: sprintf('config: group "%s" has a negative "workerCount"', $name),
-            );
-        }
-
-        $restartPolicy = RestartPolicy::tryFrom(
-            (string) ($data['restartPolicy'] ?? $defaults->restartPolicy->value),
-        );
-
-        if ($restartPolicy === null) {
-            throw new InvalidConfigException(
-                message: sprintf('config: group "%s" restartPolicy must be always|on-failure|never', $name),
-            );
-        }
-
-        return new self(
-            name: $name,
-            workerScript: $workerScript,
-            workerCount: $workerCount,
-            phpBinary: (string) ($data['phpBinary'] ?? $defaults->phpBinary),
-            phpArgs: isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs,
-            workerArgs: MasterConfig::stringList($data['workerArgs'] ?? []),
-            env: array_merge($defaults->env, MasterConfig::stringMap($data['env'] ?? [])),
-            restartPolicy: $restartPolicy,
-            shutdownTimeoutMs: MasterConfig::nonNegativeInt(
-                $data,
-                'shutdownTimeoutMs',
-                $defaults->shutdownTimeoutMs,
-                $name,
-            ),
-            restartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'restartBackoffMs',
-                $defaults->restartBackoffMs,
-                $name,
-            ),
-            maxRestartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'maxRestartBackoffMs',
-                $defaults->maxRestartBackoffMs,
-                $name,
-            ),
-            watchdogTimeoutMs: MasterConfig::watchdogTimeoutMs(
-                $data,
-                $defaults->watchdogTimeoutMs,
-                $name,
-            ),
-            server: MasterConfig::serverParams($data['server'] ?? null, $name),
-        );
+    /** How many workers the group keeps: workerCount, or one per logical CPU (Cpu::count) when that is 0. */
+    public function resolvedWorkerCount(): int
+    {
+        return $this->workerCount > 0 ? $this->workerCount : Cpu::count();
     }
 
     /**
-     * The `server` block as worker argv. A scalar travels as it is (a boolean as 1/0);
-     * anything structured travels as JSON, because argv carries strings and there is no
-     * shell on the way — WorkerProcess passes the command as an array, so quotes and
-     * spaces inside a value are just characters.
-     *
-     * The master still does not know what any of it means. It only knows that a list or
-     * an object has one obvious string form.
-     *
-     * @return list<string>
+     * How long to wait before a restart that follows this many fast failures in a row: not
+     * at all after none, then restartBackoffMs, doubled with each further one, up to
+     * maxRestartBackoffMs. Keeps a crash loop from spinning.
      */
-    public function argumentFlags(): array
+    public function backoffMs(int $consecutiveFastFails): int
     {
-        $flags = [];
-
-        foreach ($this->server as $key => $value) {
-            $flags[] = '--' . $key . '=' . static::flagValue($value);
+        if ($consecutiveFastFails <= 0) {
+            return 0;
         }
 
-        return $flags;
-    }
-
-    protected static function flagValue(mixed $value): string
-    {
-        if (is_bool($value)) {
-            return $value ? '1' : '0';
-        }
-
-        if (is_scalar($value)) {
-            return (string) $value;
-        }
-
-        return (string) json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        return (int) min(
+            $this->restartBackoffMs * (2 ** ($consecutiveFastFails - 1)),
+            $this->maxRestartBackoffMs,
+        );
     }
 }

@@ -6,12 +6,13 @@ namespace SConcur\Tests\Feature\Worker;
 
 use Closure;
 use PHPUnit\Framework\TestCase;
-use SConcur\Worker\MasterCli;
+use SConcur\Worker\WorkerMaster;
+use SConcur\Tests\Impl\PhpScript;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * End-to-end coverage of WorkerMaster via the bin/sconcur-server CLI: the
- * master spawns demo workers (HttpServer + SO_REUSEPORT + masterPid) and we observe
+ * End-to-end coverage of WorkerMaster through a master of its own (TestWorkerMaster): the
+ * master forks demo workers (HttpServer + SO_REUSEPORT + masterPid) and we observe
  * supervision, restarts, graceful shutdown, single-instance, status/stop, orphan
  * self-termination and crash-loop backoff. Each test manages its own master.
  */
@@ -101,6 +102,41 @@ class WorkerMasterTest extends TestCase
             // had been up, so the replacement waits out a backoff instead of coming up at
             // once — a pool hung by a shared cause would otherwise recycle itself forever.
             self::assertMatchesRegularExpression('/restarting in [1-9]\d*ms/', $log);
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * SIGTERM frees the native call a hung worker is in, and it leaves with code 0. It still
+     * failed, so OnFailure refills its slot.
+     */
+    public function testOnFailurePolicyReplacesAWorkerTheWatchdogStopped(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 5_000,
+            'restartPolicy'     => 'on-failure',
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            $master->get('/native-msleep/20000');
+
+            $replaced = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid !== 0 && $pid !== $before;
+                },
+                timeoutSeconds: 25.0,
+            );
+
+            self::assertTrue($replaced, 'OnFailure should replace a worker the watchdog stopped: ' . $master->logText());
+            self::assertStringNotContainsString('not restarting', $master->logText());
         } finally {
             $master->stop();
         }
@@ -307,23 +343,65 @@ class WorkerMasterTest extends TestCase
 
     public function testOnFailurePolicyDoesNotRestartCleanExit(): void
     {
-        // OnFailure: a clean exit (here via the maxRequests quota) is "done", so the
+        // OnFailure: a worker that finishes cleanly of its own accord is "done", so the
         // single worker is not respawned and the master finishes on its own.
+        $workerScript = (string) tempnam(sys_get_temp_dir(), 'sc-done-worker-');
+
+        file_put_contents($workerScript, "<?php\nusleep(200_000);\nexit(0);\n");
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerScript'  => $workerScript,
+                'workerCount'   => 1,
+                'restartPolicy' => 'on-failure',
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertSame(
+                0,
+                $master->waitForExit(8.0),
+                'master should exit once its only worker finishes cleanly under OnFailure: ' . $master->logText(),
+            );
+
+            self::assertStringContainsString('not restarting (policy=on-failure)', $master->logText());
+        } finally {
+            $master->stop();
+
+            @unlink($workerScript);
+        }
+    }
+
+    public function testOnFailurePolicyRestartsAWorkerAtItsLimit(): void
+    {
+        // A worker that reaches its maxRequests asks to be replaced, and OnFailure replaces
+        // it: that clean exit is not the worker being done, it is the worker being recycled.
         $master = TestWorkerMaster::start(
             options: ['workerCount' => 1, 'restartPolicy' => 'on-failure'],
             workerArgs: ['--maxRequests=2'],
         );
 
         try {
-            for ($i = 0; $i < 4; $i++) {
+            $first = $master->workerPid();
+
+            // Past the limit wherever the spread put it: 2 to 3 under a master.
+            for ($i = 0; $i < 6; $i++) {
                 $master->get('/');
             }
 
-            self::assertSame(
-                0,
-                $master->waitForExit(8.0),
-                'master should exit once its only worker finishes cleanly under OnFailure',
+            $replaced = $this->waitFor(
+                static function () use ($master, $first): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid > 0 && $pid !== $first;
+                },
+                timeoutSeconds: 6.0,
             );
+
+            self::assertTrue($replaced, 'the worker must be replaced at its limit: ' . $master->logText());
+            self::assertTrue($master->isRunning(), 'the master keeps supervising');
+            self::assertStringContainsString('its limit', $master->logText());
         } finally {
             $master->stop();
         }
@@ -392,7 +470,7 @@ class WorkerMasterTest extends TestCase
             // stopped — immune to PID reuse of the dead master's pid.
             [$code, $output] = TestWorkerMaster::runCommand('status', $master->configPath());
 
-            self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
+            self::assertSame(3, $code);
             self::assertStringContainsString('stopped', $output);
         } finally {
             $master->stop();
@@ -439,12 +517,19 @@ class WorkerMasterTest extends TestCase
 
             $status = (int) curl_getinfo($slow, CURLINFO_HTTP_CODE);
             $body   = (string) curl_multi_getcontent($slow);
+            $error  = curl_error($slow);
 
             curl_multi_remove_handle($multi, $slow);
             curl_close($slow);
             curl_multi_close($multi);
 
-            self::assertSame(200, $status, 'the in-flight request must drain, not be dropped');
+            $master->waitForExit(8.0);
+
+            self::assertSame(
+                200,
+                $status,
+                'the in-flight request must drain, not be dropped: ' . $error . "\n" . $master->logText(),
+            );
             self::assertSame('slept', $body);
 
             self::assertSame(0, $master->waitForExit(8.0), 'removing the state file must gracefully stop the master');
@@ -455,24 +540,136 @@ class WorkerMasterTest extends TestCase
         }
     }
 
-    public function testStartFailsForMissingWorkerScript(): void
+    /**
+     * A response the worker is still writing when it is told to stop goes out whole: the
+     * server drains until its connections have written their last responses and closed,
+     * not only until no handler is in flight. The client reads slowly, so the body is still
+     * on its way when the stop arrives; a worker that left as soon as its handler returned
+     * cut it off.
+     */
+    public function testAResponseStillBeingWrittenGoesOutWholeWhenTheWorkerStops(): void
+    {
+        // Well past what the loopback socket buffers take, or the kernel would hold the
+        // whole body before the stop and there would be nothing left to cut off.
+        $bytes  = 16_000_000;
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            // Room for the second the body takes, before the master kills the worker.
+            'shutdownTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $multi = curl_multi_init();
+            $slow  = curl_init($master->baseUrl() . '/big/' . $bytes);
+
+            curl_setopt_array($slow, [
+                CURLOPT_RETURNTRANSFER        => true,
+                CURLOPT_TIMEOUT               => 8,
+                // A second's worth: the socket buffers fill and the rest waits on the
+                // client.
+                CURLOPT_MAX_RECV_SPEED_LARGE  => $bytes,
+            ]);
+
+            curl_multi_add_handle($multi, $slow);
+
+            $running = null;
+
+            // Until the body has started to arrive: the handler has answered.
+            do {
+                curl_multi_exec($multi, $running);
+                curl_multi_select($multi, 0.05);
+            } while ($running > 0 && curl_getinfo($slow, CURLINFO_SIZE_DOWNLOAD) <= 0);
+
+            unlink($master->stateFilePath());
+
+            do {
+                curl_multi_exec($multi, $running);
+
+                if ($running > 0) {
+                    curl_multi_select($multi, 1.0);
+                }
+            } while ($running > 0);
+
+            $status = (int) curl_getinfo($slow, CURLINFO_HTTP_CODE);
+            $length = strlen((string) curl_multi_getcontent($slow));
+
+            curl_multi_remove_handle($multi, $slow);
+            curl_close($slow);
+            curl_multi_close($multi);
+
+            $master->waitForExit(8.0);
+
+            self::assertSame(200, $status, $master->logText());
+            self::assertSame($bytes, $length, 'the body was cut off: ' . $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * A client that connected before the stop and has not sent its request yet is still
+     * answered: the worker gives the connection a moment for its first request, answers it
+     * with `Connection: close` and only then closes it. The request goes out once the
+     * worker has stopped accepting, so a worker that closed every idle connection at that
+     * point turned the client away with nothing.
+     */
+    public function testAClientThatConnectedBeforeTheStopIsAnswered(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'shutdownTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $client = stream_socket_client('tcp://127.0.0.1:' . $master->port(), $errorCode, $errorMessage, 2.0);
+
+            self::assertIsResource($client, 'could not connect: ' . $errorMessage);
+
+            unlink($master->stateFilePath());
+
+            $stopped = $this->waitFor(
+                static fn(): bool => str_contains($master->logText(), 'stop accepting'),
+                timeoutSeconds: 5.0,
+            );
+
+            self::assertTrue($stopped, 'the worker should stop accepting: ' . $master->logText());
+
+            fwrite($client, "GET /pid HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+            stream_set_timeout($client, 5);
+
+            $response = (string) stream_get_contents($client);
+
+            fclose($client);
+
+            self::assertStringStartsWith('HTTP/1.1 200', $response, 'the client was turned away: ' . $master->logText());
+            self::assertMatchesRegularExpression('/^connection: close\r$/mi', $response);
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * A role that fails as the worker starts — here, a script it requires that is not there —
+     * fails every worker before any is up: the master stops with EXIT_NEVER_CAME_UP.
+     */
+    public function testARoleThatFailsAtOnceStopsTheMaster(): void
     {
         $configPath = TestWorkerMaster::writeConfig(['workerScript' => '/no/such/worker.php']);
 
-        [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
+        [$code] = TestWorkerMaster::runCommand('start', $configPath);
 
-        self::assertSame(MasterCli::EXIT_ERROR, $code);
-        self::assertStringContainsString('not found', $output);
+        self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $code);
     }
 
     public function testStartFailsForNegativeWorkerCount(): void
     {
-        // Caught while the config is read, not once the master is up: a usage error.
+        // Caught as the group is built, before a master starts.
         $configPath = TestWorkerMaster::writeConfig(['workerCount' => -1]);
 
         [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
-        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertSame(1, $code);
         self::assertStringContainsString('workerCount', $output);
     }
 
@@ -573,8 +770,59 @@ class WorkerMasterTest extends TestCase
 
             [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
-            self::assertSame(MasterCli::EXIT_ERROR, $code);
+            self::assertSame(1, $code);
             self::assertStringContainsString('lock', $output);
+            self::assertTrue($master->isRunning(), 'the first master must keep running');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The process is a master's only while it is one: an application whose master was
+     * refused at the lock carries on as itself, and an asynchronous call in it — an alert
+     * that the start failed, say — goes through.
+     */
+    public function testAMasterRefusedAtTheLockLeavesItsProcessFreeToRunAsynchronousCalls(): void
+    {
+        $master = TestWorkerMaster::start(['workerCount' => 1]);
+
+        try {
+            $output = PhpScript::run(
+                code: <<<'PHP'
+                    require $argv[1] . '/vendor/autoload.php';
+
+                    use SConcur\Features\Sleeper\Sleeper;
+                    use SConcur\WaitGroup;
+                    use SConcur\Worker\WorkerGroupConfig;
+                    use SConcur\Worker\WorkerMaster;
+
+                    try {
+                        (new WorkerMaster(
+                            runtimeDir: $argv[2],
+                            groups: [new WorkerGroupConfig(name: 'http', role: static function (): void {})],
+                            name: $argv[3],
+                        ))->run();
+
+                        echo "not refused\n";
+                    } catch (Throwable $exception) {
+                        echo 'refused: ', $exception->getMessage(), "\n";
+                    }
+
+                    $group = WaitGroup::create();
+
+                    $group->add(static fn() => Sleeper::usleep(microseconds: 1_000));
+
+                    $group->waitAll();
+
+                    echo "slept\n";
+                    PHP,
+                arguments: [PhpScript::projectRoot(), $master->runtimeDir(), $master->name()],
+            );
+
+            self::assertStringContainsString('refused: ', $output);
+            self::assertStringContainsString('lock', $output);
+            self::assertStringContainsString('slept', $output);
             self::assertTrue($master->isRunning(), 'the first master must keep running');
         } finally {
             $master->stop();
@@ -614,19 +862,19 @@ class WorkerMasterTest extends TestCase
         try {
             [$statusCode, $statusOut] = TestWorkerMaster::runCommand('status', $configPath);
 
-            self::assertSame(MasterCli::EXIT_OK, $statusCode);
+            self::assertSame(0, $statusCode);
             self::assertStringContainsString('running', $statusOut);
 
             [$stopCode, $stopOut] = TestWorkerMaster::runCommand('stop', $configPath);
 
-            self::assertSame(MasterCli::EXIT_OK, $stopCode);
+            self::assertSame(0, $stopCode);
             self::assertStringContainsString('stopped', $stopOut);
 
             self::assertSame(0, $master->waitForExit(8.0), 'stop should let the master exit cleanly');
 
             [$afterCode, $afterOut] = TestWorkerMaster::runCommand('status', $configPath);
 
-            self::assertSame(MasterCli::EXIT_NOT_RUNNING, $afterCode);
+            self::assertSame(3, $afterCode);
             self::assertStringContainsString('stopped', $afterOut);
         } finally {
             $master->stop();
@@ -680,41 +928,102 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * A worker that left at its maxRequests limit served: the crashes in its slot before it
+     * do not make its replacement's crash wait longer. Crashes at start, a worker that
+     * serves, then one more crash: it waits the first backoff, not the fifth.
+     */
+    public function testAWorkerAtItsLimitResetsItsSlotsBackoff(): void
+    {
+        $plan = (string) tempnam(sys_get_temp_dir(), 'sc-start-plan-');
+
+        // The first serves, so the group comes up and a crash is not a failure to start.
+        file_put_contents($plan, implode(PHP_EOL, ['serve', 'crash', 'crash', 'crash', 'crash', 'serve', 'crash', 'serve']) . PHP_EOL);
+
+        $master = TestWorkerMaster::start(
+            options: ['workerCount' => 1, 'restartBackoffMs' => 50],
+            env: ['SCONCUR_TEST_START_PLAN' => $plan],
+            workerArgs: ['--maxRequests=1'],
+        );
+
+        $restarts = static fn(): array => preg_match_all('~restarting in (\d+)ms~', $master->logText(), $matches) > 0
+            ? array_map(intval(...), $matches[1])
+            : [];
+
+        // The request start() made to see the master up was the first worker's one.
+        try {
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => count($restarts()) >= 4, timeoutSeconds: 6.0),
+                'four crashes at start: ' . $master->logText(),
+            );
+
+            $crashes = $restarts();
+
+            self::assertSame([50, 100, 200, 400], $crashes);
+
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => $master->get('/')[0] === 200, timeoutSeconds: 6.0),
+                'the worker after the crashes should serve',
+            );
+
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => count($restarts()) >= 5, timeoutSeconds: 6.0),
+                'the crash after the limit: ' . $master->logText(),
+            );
+
+            self::assertSame(50, $restarts()[4]);
+        } finally {
+            $master->stop();
+
+            @unlink($plan);
+        }
+    }
+
+    /**
+     * A worker dying on startup must leave its reason in the journal even when the php.ini
+     * says display_errors=Off (the production recommendation). A worker runs on its
+     * master's php.ini, so display_errors=Off goes there; the worker forces
+     * display_errors=stderr on itself. The fatal is a real one —
+     * an exhausted memory limit — because an uncaught exception would be reported by the
+     * worker's own catch whatever display_errors says.
+     */
     public function testWorkerFatalErrorTextIsLoggedEvenWithDisplayErrorsOff(): void
     {
-        // A worker dying on startup must leave its reason in the journal even when
-        // the deployment php.ini says display_errors=Off (the production
-        // recommendation): the master forces display_errors=stderr into the worker
-        // command, so the fatal text arrives on stderr and is logged at ERROR.
+        $iniDirectory = sys_get_temp_dir() . '/sc-master-ini-' . uniqid('', true);
         $workerScript = (string) tempnam(sys_get_temp_dir(), 'sc-fatal-worker-');
-        $iniPath      = (string) tempnam(sys_get_temp_dir(), 'sc-worker-ini-');
 
-        file_put_contents($workerScript, "<?php\nthrow new RuntimeException('boom on worker startup');\n");
-        file_put_contents($iniPath, "display_errors=Off\n");
+        mkdir($iniDirectory);
+
+        file_put_contents($iniDirectory . '/display-errors.ini', "display_errors=Off\n");
+        file_put_contents(
+            $workerScript,
+            // The limit sits above what the copy of the master already holds — a lower one
+            // is refused outright — and the string is well past it.
+            "<?php\nini_set('memory_limit', (string) (memory_get_usage(true) + 8 * 1024 * 1024));\n"
+            . "\$filler = str_repeat('x', 32 * 1024 * 1024);\n",
+        );
 
         $master = TestWorkerMaster::start(
             options: [
                 'workerScript'  => $workerScript,
                 'workerCount'   => 1,
                 'restartPolicy' => 'never',
-                'phpArgs'       => [
-                    '-c',
-                    $iniPath,
-                ],
             ],
+            // Appended to the scan directory rather than replacing it, which the leading
+            // separator says: the image's own ini files still load.
+            env: ['PHP_INI_SCAN_DIR' => ':' . $iniDirectory],
             waitReachable: false,
         );
 
         try {
-            // policy=never + a crash: the master exits once its only worker is done.
             $exitCode = $master->waitForExit(8.0);
 
             $logText = $master->logText();
 
-            self::assertSame(0, $exitCode, 'the master should finish on its own: ' . $logText);
-            self::assertStringContainsString('boom on worker startup', $logText);
+            self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $exitCode, 'the master should stop: ' . $logText);
+            self::assertStringContainsString('no worker came up', $logText);
             self::assertMatchesRegularExpression(
-                '/ERROR \[worker: \d+ \S+ #0\]: [^\n]*boom on worker startup/',
+                '/ERROR \[worker: \d+ \S+ #0\]: [^\n]*Allowed memory size/',
                 $logText,
                 'the fatal text must be logged at ERROR (stderr), not INFO',
             );
@@ -722,59 +1031,69 @@ class WorkerMasterTest extends TestCase
             $master->stop();
 
             @unlink($workerScript);
-            @unlink($iniPath);
+            @unlink($iniDirectory . '/display-errors.ini');
+            @rmdir($iniDirectory);
         }
     }
 
-    public function testReloadRollsEveryWorkerWithoutDowntime(): void
+    /**
+     * With `accessLog: file` a worker writes its access lines itself, to a file of the
+     * day beside the journal, signed with its place in the pool — instead of handing them
+     * to its supervisor to journal.
+     */
+    public function testAccessLinesGoToAFileOfTheDayWhenAskedTo(): void
     {
-        $master = TestWorkerMaster::start(['workerCount' => 2]);
+        $master = TestWorkerMaster::start([
+            'workerCount' => 1,
+            'accessLog'   => 'file',
+        ]);
 
         try {
-            $before = $master->distinctWorkerPids();
+            for ($request = 0; $request < 3; ++$request) {
+                $master->get('/');
+            }
 
-            self::assertGreaterThanOrEqual(2, count($before), 'both workers should serve before reload');
+            $pattern = $master->runtimeDir() . '/' . $master->name() . '-access-*.log';
 
-            // The reload command blocks until the master has rolled every worker.
-            [$code, $output] = TestWorkerMaster::runCommand('reload', $master->configPath());
+            $written = $this->waitFor(
+                static function () use ($pattern): bool {
+                    $files = glob($pattern) ?: [];
 
-            self::assertSame(MasterCli::EXIT_OK, $code, 'reload should succeed: ' . $output);
-            self::assertStringContainsString('reloaded', $output);
-
-            // After a full roll the serving pids are all fresh — disjoint from the old
-            // set — and the server kept answering throughout (master still running).
-            $rolled = $this->waitFor(
-                static function () use ($master, $before): bool {
-                    $after = $master->distinctWorkerPids(40);
-
-                    return count($after) >= 2 && array_intersect($before, $after) === [];
+                    return $files !== [] && str_contains((string) file_get_contents($files[0]), 'GET / 200');
                 },
-                timeoutSeconds: 6.0,
+                timeoutSeconds: 5.0,
             );
 
-            self::assertTrue($rolled, 'after reload every worker pid must be fresh and serving');
-            self::assertTrue($master->isRunning());
+            self::assertTrue($written, 'the access lines should reach the file: ' . $master->logText());
 
-            [$status, $body] = $master->get('/');
+            $lines = (string) file_get_contents((glob($pattern) ?: [''])[0]);
 
-            self::assertSame(200, $status, 'the server must stay reachable after a reload');
-            self::assertSame('ok', $body);
-
-            self::assertStringContainsString('reload requested', $master->logText());
-            self::assertStringContainsString('reload complete', $master->logText());
+            self::assertMatchesRegularExpression('/GET \/ 200 [\d.]+ms default#0 pid=\d+\n/', $lines);
+            self::assertStringNotContainsString('GET / 200', $master->logText(), 'none of them in the journal');
         } finally {
             $master->stop();
         }
     }
 
-    public function testReloadReportsNotRunningWithoutMaster(): void
+    public function testAccessLinesCanBeSwitchedOff(): void
     {
-        $configPath = TestWorkerMaster::writeConfig(['workerCount' => 1]);
+        $master = TestWorkerMaster::start([
+            'workerCount' => 1,
+            'accessLog'   => 'off',
+        ]);
 
-        [$code, $output] = TestWorkerMaster::runCommand('reload', $configPath);
+        try {
+            for ($request = 0; $request < 3; ++$request) {
+                $master->get('/');
+            }
 
-        self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
-        self::assertStringContainsString('not running', $output);
+            usleep(500_000);
+
+            self::assertStringNotContainsString('GET / 200', $master->logText());
+            self::assertSame([], glob($master->runtimeDir() . '/' . $master->name() . '-access-*.log') ?: []);
+        } finally {
+            $master->stop();
+        }
     }
 
     /**
@@ -790,13 +1109,13 @@ class WorkerMasterTest extends TestCase
                         'name'         => 'alpha',
                         'workerScript' => self::demoWorkerScript(),
                         'workerCount'  => 1,
-                        'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
+                        'server'       => ['address' => '127.0.0.1:0'],
                     ],
                     [
                         'name'         => 'beta',
                         'workerScript' => self::demoWorkerScript(),
                         'workerCount'  => 2,
-                        'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
+                        'server'       => ['address' => '127.0.0.1:0'],
                     ],
                 ],
             ],
@@ -828,230 +1147,13 @@ class WorkerMasterTest extends TestCase
         }
     }
 
-    /**
-     * A reload re-reads the config, so scaling a pool is an edit plus a reload rather
-     * than a restart of the whole master.
-     */
-    public function testReloadPicksUpAResizedGroup(): void
-    {
-        $master = TestWorkerMaster::start(['workerCount' => 1]);
-
-        try {
-            $master->rewriteConfig([
-                'runtimeDir'   => $master->runtimeDir(),
-                'logDir'       => $master->runtimeDir(),
-                'name'         => $master->name(),
-                'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
-                'workerScript' => self::demoWorkerScript(),
-                'workerCount'  => 3,
-                'server'       => ['address' => '127.0.0.1:' . $master->port(), 'reusePort' => true],
-            ]);
-
-            [$code] = TestWorkerMaster::runCommand('reload', $master->configPath());
-
-            self::assertSame(0, $code);
-
-            self::assertTrue(
-                $this->waitFor(
-                    static fn(): bool => str_contains($master->logText(), 'default #2'),
-                    15.0,
-                ),
-                'the third worker must come up after the reload',
-            );
-
-            [, $output] = TestWorkerMaster::runCommand('status', $master->configPath());
-
-            self::assertStringContainsString('default: workers=3', $output);
-        } finally {
-            $master->stop();
-        }
-    }
-
-    /**
-     * A scoped reload touches its group and leaves the others where they are.
-     */
-    public function testReloadCanBeNarrowedToOneGroup(): void
-    {
-        $groups = [
-            [
-                'name'         => 'alpha',
-                'workerScript' => self::demoWorkerScript(),
-                'workerCount'  => 1,
-                'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
-            ],
-            [
-                'name'         => 'beta',
-                'workerScript' => self::demoWorkerScript(),
-                'workerCount'  => 1,
-                'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
-            ],
-        ];
-
-        $master = TestWorkerMaster::start(
-            options: ['groups' => $groups],
-            waitReachable: false,
-        );
-
-        try {
-            self::assertTrue(
-                $this->waitFor(static fn(): bool => str_contains($master->logText(), 'beta #0'), 5.0),
-                'both groups must be up first',
-            );
-
-            $master->rewriteConfig([
-                'runtimeDir' => $master->runtimeDir(),
-                'logDir'     => $master->runtimeDir(),
-                'name'       => $master->name(),
-                'phpArgs'    => ['-d', 'extension=' . self::extensionPath()],
-                'groups'     => $groups,
-            ]);
-
-            [$scopedCode, $scopedOutput] = TestWorkerMaster::runCommand(
-                'reload',
-                $master->configPath(),
-                argv: ['--group=alpha'],
-            );
-
-            self::assertSame(0, $scopedCode, $scopedOutput);
-
-            self::assertTrue(
-                $this->waitFor(
-                    static fn(): bool => str_contains($master->logText(), 'reload requested for group alpha'),
-                    10.0,
-                ),
-                'the master must report the scoped request',
-            );
-
-            self::assertStringContainsString('group alpha: rolling', $master->logText());
-            self::assertStringNotContainsString('group beta: rolling', $master->logText());
-        } finally {
-            $master->stop();
-        }
-    }
-
-    /**
-     * A config that does not parse must never take a working pool down: the reload is
-     * refused and the master keeps running on what it had.
-     */
-    public function testAnInvalidReloadIsRefusedAndTheMasterKeepsRunning(): void
-    {
-        $master = TestWorkerMaster::start(['workerCount' => 1]);
-
-        try {
-            // Straight to the trigger file: the CLI reads the config before writing it,
-            // so a broken one never gets that far. The master's own guard is what this
-            // covers — it re-reads at a moment the CLI cannot vouch for.
-            $brokenPath = $master->runtimeDir() . '/broken.json';
-
-            file_put_contents($brokenPath, '{"groups": []}');
-
-            file_put_contents(
-                $master->runtimeDir() . '/' . $master->name() . '.reload',
-                $brokenPath . "\n",
-            );
-
-            self::assertTrue(
-                $this->waitFor(
-                    static fn(): bool => str_contains($master->logText(), 'reload refused'),
-                    10.0,
-                ),
-                'the master must report the refusal',
-            );
-
-            self::assertStringContainsString('keeping the running config', $master->logText());
-            self::assertTrue($master->isRunning());
-            self::assertGreaterThan(0, $master->workerPid());
-
-            // A refusal is the end of that request. The master used to note the request as
-            // served before deciding it could not honour it, and then announced it complete
-            // on a later tick — a journal saying a reload landed when nothing had rolled.
-            usleep(500_000);
-
-            self::assertStringNotContainsString(
-                'reload complete',
-                $master->logText(),
-                'a refused reload must not be reported complete',
-            );
-        } finally {
-            $master->stop();
-        }
-    }
-
-    /**
-     * A config that parses but points at a script that is not there is a typo, and it must
-     * not take a working pool down: without this check every slot rolls — SIGTERM to a
-     * healthy worker, then `php /wrong/path` exiting 1 — and the pool falls into a crash
-     * loop behind a backoff.
-     */
-    public function testAReloadNamingAMissingWorkerScriptIsRefused(): void
-    {
-        $master = TestWorkerMaster::start(['workerCount' => 1]);
-
-        try {
-            $servingPid = $master->workerPid();
-
-            $brokenPath = TestWorkerMaster::writeConfig([
-                'workerScript' => '/no/such/worker.php',
-                'runtimeDir'   => $master->runtimeDir(),
-            ]);
-
-            file_put_contents(
-                $master->runtimeDir() . '/' . $master->name() . '.reload',
-                $brokenPath . "\n",
-            );
-
-            self::assertTrue(
-                $this->waitFor(
-                    static fn(): bool => str_contains($master->logText(), 'reload refused'),
-                    10.0,
-                ),
-                'the master must report the refusal',
-            );
-
-            self::assertStringContainsString('Worker script not found', $master->logText());
-            self::assertTrue($master->isRunning());
-            self::assertSame($servingPid, $master->workerPid(), 'the serving worker must be left alone');
-        } finally {
-            $master->stop();
-        }
-    }
-
-    /**
-     * The master reads the trigger from its own working directory, not the operator's, so
-     * a relative path written as it was typed resolves to nothing there. The CLI resolves
-     * it before writing; a trigger that still names a path the master cannot find is
-     * refused rather than silently rolling the workers onto the config already loaded.
-     */
-    public function testAReloadNamingAConfigThatIsNotThereIsRefused(): void
-    {
-        $master = TestWorkerMaster::start(['workerCount' => 1]);
-
-        try {
-            file_put_contents(
-                $master->runtimeDir() . '/' . $master->name() . '.reload',
-                "config/does-not-exist.json\n",
-            );
-
-            self::assertTrue(
-                $this->waitFor(
-                    static fn(): bool => str_contains($master->logText(), 'no config file at'),
-                    10.0,
-                ),
-                'the master must say the config it was pointed at is not there',
-            );
-
-            self::assertTrue($master->isRunning());
-        } finally {
-            $master->stop();
-        }
-    }
-
-    private static function demoWorkerScript(): string
+    /** Where a line first appears in the journal; fails the test when it does not. */
+    protected static function demoWorkerScript(): string
     {
         return dirname(__DIR__, 3) . '/tests/servers/http/http-server.php';
     }
 
-    private static function extensionPath(): string
+    protected static function extensionPath(): string
     {
         // The build under test, so a run that spawns its own worker loads the same
         // extension the suite does. Without it a run would answer for one core while
@@ -1062,7 +1164,7 @@ class WorkerMasterTest extends TestCase
     /**
      * Polls $condition until it returns true or the timeout elapses.
      */
-    private function waitFor(Closure $condition, float $timeoutSeconds): bool
+    protected function waitFor(Closure $condition, float $timeoutSeconds): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

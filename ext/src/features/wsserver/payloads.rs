@@ -31,8 +31,6 @@ pub struct ServePayload {
     pub max_concurrency: i64,
     #[serde(rename = "sht", default)]
     pub shutdown_timeout_ms: i64,
-    #[serde(rename = "rp", default)]
-    pub reuse_port: bool,
     /// Restricts the upgrade endpoint to this path (empty = any path).
     #[serde(rename = "pt", default)]
     pub path: String,

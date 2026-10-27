@@ -16,13 +16,13 @@ use SConcur\Tests\Impl\TestApplication;
 /**
  * Demo / test AMQP consumer worker: the shape a supervised consumer takes.
  *
- * Everything about the queues comes from argv, which is how WorkerMaster configures a
- * group's workers:
+ * Everything about the queues comes from argv, which is how the test master
+ * (tests/servers/worker/master.php) hands a group's settings to the script its role runs:
  *
  *   --queues=[{"name":"orders","coroutineCount":4}]  the queues and their weights
  *   --prefetchCount=1                                 default prefetch per coroutine
  *   --maxMessages=0                                   stop after N messages (0 = never)
- *   --masterPid=<pid>                                 injected by the master
+ *   --masterPid=<pid>                                 injected by the test master
  *
  * The credentials are the worker's own business and never travel in argv — a password
  * would be visible in `ps` to every user of the machine.

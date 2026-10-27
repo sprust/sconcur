@@ -13,10 +13,10 @@ use SConcur\Scheduler\Scheduler;
 
 /**
  * Shared runtime support for the long-lived workers a WorkerMaster supervises — the three
- * servers and the AMQP queue consumer: build constructor overrides from CLI argv, install
- * graceful-shutdown signal handlers, arm automatic preemption, read the telemetry
- * environment, and detect an orphaned worker. Stateless — it only adds behaviour, never
- * properties.
+ * servers and the AMQP queue consumer: build constructor overrides from CLI argv, read the
+ * telemetry environment, arm automatic preemption and write the lifecycle lines. What
+ * tells a worker to stop — a signal, or its master gone — is StopRequest. Stateless — it
+ * only adds behaviour, never properties.
  *
  * None of that is about serving a socket, which is why a consumer uses it unchanged; the
  * namespace is where the first user happened to live.
@@ -91,99 +91,18 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * Fills the telemetry-related constructor overrides from the environment, unless
-     * an explicit --flag already set them: the collector socket, the pool name and
-     * the two sampling cadences. Shared by the servers' fromArgs(). Via env (not
-     * argv) so the server-agnostic WorkerMaster can supply telemetry config without
-     * feeding a non-matching worker an unknown --flag. The master injects
-     * SCONCUR_TELEMETRY_SOCKET/SCONCUR_SERVER_NAME from its runtimeDir/name; the
-     * operator may set the cadences.
-     *
-     * @param array<string, int|bool|float|string> $overrides
-     *
-     * @return array<string, int|bool|float|string>
+     * A telemetry setting from the environment, for a server that left its own null: a
+     * worker master puts the collector socket and the pool's name there
+     * (SCONCUR_TELEMETRY_SOCKET, SCONCUR_SERVER_NAME); the operator may set the cadence
+     * (SCONCUR_TELEMETRY_INTERVAL_MS). Through the environment, so a server built in a
+     * worker's role reports to its master without being told to, while a value of its
+     * own, an empty socket included, is never overridden.
      */
-    protected static function applyTelemetryEnvironment(array $overrides): array
+    protected static function fromEnvironment(string $name, string $default = ''): string
     {
-        $stringDefaults = [
-            'telemetrySocket' => 'SCONCUR_TELEMETRY_SOCKET',
-            'serverName'      => 'SCONCUR_SERVER_NAME',
-        ];
+        $value = getenv($name);
 
-        foreach ($stringDefaults as $parameter => $environmentName) {
-            if (isset($overrides[$parameter])) {
-                continue;
-            }
-
-            $environmentValue = getenv($environmentName);
-
-            if (is_string($environmentValue) && $environmentValue !== '') {
-                $overrides[$parameter] = $environmentValue;
-            }
-        }
-
-        $integerDefaults = [
-            'telemetryIntervalMs' => 'SCONCUR_TELEMETRY_INTERVAL_MS',
-        ];
-
-        foreach ($integerDefaults as $parameter => $environmentName) {
-            if (isset($overrides[$parameter])) {
-                continue;
-            }
-
-            $environmentValue = getenv($environmentName);
-
-            if (is_string($environmentValue) && $environmentValue !== '') {
-                $overrides[$parameter] = (int) $environmentValue;
-            }
-        }
-
-        return $overrides;
-    }
-
-    /**
-     * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
-     * shuts down gracefully, and returns a callback that restores the handlers (and
-     * async-signals mode) that were in place before. Requires ext-pcntl; without it
-     * the server runs until the process is killed and the restorer is a no-op.
-     *
-     * @return Closure(): void
-     */
-    protected function installSignalHandlers(bool &$stopRequested): Closure
-    {
-        if (!function_exists('pcntl_async_signals')) {
-            return static function (): void {
-            };
-        }
-
-        $signals = [SIGTERM, SIGINT];
-
-        $previousAsync = pcntl_async_signals();
-
-        /** @var array<int, callable|int> $previousHandlers */
-        $previousHandlers = [];
-
-        foreach ($signals as $signal) {
-            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
-        }
-
-        pcntl_async_signals(true);
-
-        $handler = static function () use (&$stopRequested): void {
-            $stopRequested = true;
-        };
-
-        foreach ($signals as $signal) {
-            pcntl_signal($signal, $handler);
-        }
-
-        return static function () use ($signals, $previousHandlers, $previousAsync): void {
-            foreach ($signals as $signal) {
-                pcntl_signal($signal, $previousHandlers[$signal]);
-            }
-
-            pcntl_async_signals($previousAsync);
-        };
+        return is_string($value) && $value !== '' ? $value : $default;
     }
 
     /**
@@ -195,8 +114,8 @@ trait ServerRuntimeSupportTrait
     {
         fwrite(STDOUT, (new DateTimeImmutable())->format('Y-m-d\TH:i:s.u') . ' ' . $message . PHP_EOL);
 
-        // Flush now: when stdout is redirected to a file (a supervised worker) it is block
-        // buffered, so the startup banner would otherwise not surface until the buffer fills
+        // Flush now: when stdout is a pipe or a file (a worker under a master, a server under
+        // a supervisor) it is block buffered, so the startup banner would otherwise not surface until the buffer fills
         // or the process exits.
         fflush(STDOUT);
     }
@@ -232,25 +151,6 @@ trait ServerRuntimeSupportTrait
         } finally {
             $scheduler->disablePreemption();
         }
-    }
-
-    /**
-     * Whether this worker has been orphaned — its launching master is no longer its
-     * parent. Uses posix_getppid() (immune to PID reuse: the kernel reparents the
-     * worker once the master dies, so getppid stops matching). Falls back to a
-     * signal-0 liveness probe when posix_getppid is unavailable.
-     */
-    protected static function isOrphaned(int $masterPid): bool
-    {
-        if (function_exists('posix_getppid')) {
-            return posix_getppid() !== $masterPid;
-        }
-
-        if (function_exists('posix_kill')) {
-            return !@posix_kill($masterPid, 0);
-        }
-
-        return false;
     }
 
     /**

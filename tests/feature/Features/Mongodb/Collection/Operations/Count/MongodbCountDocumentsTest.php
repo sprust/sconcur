@@ -10,7 +10,7 @@ use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbCountDocumentsTest extends BaseTestCase
 {
-    private Collection $collection;
+    protected Collection $collection;
 
     protected function setUp(): void
     {

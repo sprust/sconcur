@@ -24,10 +24,10 @@ PHP_CLI_EXT = $(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(SCONCUR_EXT) php
 PHP_EXT = $(PHP_CLI_EXT) php -d extension=$(SCONCUR_EXT)
 
 # Master control inside the `servers` container: one master runs there under
-# supervisor, holding the three servers and the RabbitMQ consumers as a group
-# each. A command names it by its config and, for a single pool, the group by
-# --group.
-SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
+# supervisor (tests/servers/worker/master.php), holding the three servers and the
+# RabbitMQ consumers as a group each. A command names it by its config, through
+# MasterControl (tests/servers/worker/control.php).
+SERVERS_CONTROL = $(DOCKER_COMPOSE) exec servers php /sconcur/tests/servers/worker/control.php
 SERVERS_CONFIG = /sconcur/config/sconcur.servers.config.json
 
 env-copy:
@@ -62,38 +62,10 @@ servers-restart:
 	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
 
 servers-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG)
+	$(SERVERS_CONTROL) status $(SERVERS_CONFIG)
 
 servers-stop:
-	$(SERVERS_CLI) stop --configPath=$(SERVERS_CONFIG)
-
-# Rolls every pool of the servers master. One pool alone: make http-server-reload.
-servers-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG)
-
-http-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=http
-
-http-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=http
-
-socket-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=socket
-
-socket-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=socket
-
-ws-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=ws
-
-ws-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
-
-rabbitmq-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=rabbitmq
-
-rabbitmq-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=rabbitmq
+	$(SERVERS_CONTROL) stop $(SERVERS_CONFIG)
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
@@ -271,7 +243,7 @@ bench-reset:
 
 # Benchmark scripts live in tests/benchmarks/, grouped by the technology they
 # measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, amqp/, db/ (whole-session
-# DB runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
+# DB runs), runtime/ (scheduler and PHP<->extension boundary) and lib/ (shared harness).
 bench-all:
 	make bench-sleeper
 	make bench-mongodb-insertOne
@@ -423,6 +395,37 @@ mem-leak-files:
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/files-soak.php $(or $(scenario),read-large) $(or $(seconds),120)
 
+# Soak test for the worker master under failures: one master per scenario, with workers and
+# requests failing over and over around steady load, reporting what the master and the
+# surviving workers hold — memory, descriptors, threads, zombies, the PHP heap and the
+# runtime's tasks — and a verdict per scenario. Scenarios: oom, kill, exit, fatal, spin,
+# block, recycle, crash-at-start, sigterm, throw, disconnect, slowloris, bad-http, orphan,
+# handler-timeout, external, preempt; all of them, four minutes each, by default (about an
+# hour and ten minutes). launch= is fork or preload (the default), or both. The verdict
+# reads only past warmup= seconds (60 by default), so a short run needs a shorter one.
+# e.g.: make mem-leak-worker scenario=oom,exit seconds=600 launch=fork,preload
+mem-leak-worker:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),preload) -e WARMUP_SECONDS=$(or $(warmup),60) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-soak.php $(or $(scenario),all) $(or $(seconds),240)
+
+# What mem-leak-worker printed, saved to a file, laid out: the first read after the warm-up
+# against the last and the requests lost per worker death, a line per scenario; with
+# scenario=, every read of that one (zombies, the master's descriptors) to tell a SUSPECT
+# from a read that caught a worker being spawned or reaped.
+# e.g.: make mem-leak-worker-summary file=.bench-runs/soak.txt scenario="preload crash-at-start"
+mem-leak-worker-summary:
+	$(DOCKER_COMPOSE) exec php php tests/mem-leak/worker-soak-summary.php $(file) "$(scenario)"
+
+# How a worker dies of exit() in a request, step by step: the exit scenario with its workers
+# tracing exit() and their shutdown functions, and /proc polled for when each one is dead.
+# Medians of each step beside the requests lost per death; run it for both launches.
+# e.g.: make mem-leak-worker-exit-timing launch=preload seconds=30
+mem-leak-worker-exit-timing:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),preload) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-exit-timing.php $(or $(seconds),30)
+
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
 
@@ -501,9 +504,9 @@ bench-push:
 	$(PHP_EXT) tests/benchmarks/runtime/push-profile.php
 
 # What a member of a nested fan-out costs — a WaitGroup created inside a
-# coroutine, the only shape whose pushes come off a coroutine's own stack and so
-# the only one that feeds Scheduler::$pendingDispatches. Every other runtime
-# bench here is flat, which is why that path had never been measured.
+# coroutine, the only shape whose pushes come off a coroutine's own stack (the
+# path the since-removed deferred-dispatch queue used to serve). Every other
+# runtime bench here is flat, which is why that path had never been measured.
 bench-nested-fan-out:
 	$(PHP_EXT) tests/benchmarks/runtime/nested-fan-out.php
 
@@ -640,8 +643,9 @@ bench-ws-server-io:
 bench-ws-server-cpu:
 	$(PHP_CLI) php tests/benchmarks/ws/server-cpu.php
 
-# Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
-# php container, wrk pinned to separate cores, hitting the container IP (no NAT).
+# Runs on the HOST (needs wrk): one worker per core with SO_REUSEPORT inside the
+# php container, forks of a worker master, wrk pinned to separate cores, hitting the
+# container IP (no NAT).
 # Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
 bench-http-throughput:
 	tests/benchmarks/http/throughput.sh
@@ -689,11 +693,26 @@ bench-http-load-stats:
 bench-http-load-soak:
 	MODE=soak tests/benchmarks/http/load-stats.sh
 
+# What a pool of workers costs in memory by how its workers start: a php per worker,
+# forks of a master, and forks of a master that loaded the application first (Pss and
+# Private_Dirty from smaps_rollup). Override via env, e.g.: make bench-worker-memory WORKERS=16
+bench-worker-memory:
+	$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} \
+		-e SOAK_SECONDS=$${SOAK_SECONDS:-0} -e SAMPLE_SECONDS=$${SAMPLE_SECONDS:-60} -e OPCACHE=$${OPCACHE:-0} -e ARMS=$${ARMS:-} php \
+		php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php
+
+# The same pools under a long run on /work (SOAK_SECONDS an arm, 15 minutes by default),
+# without OPcache and with it: six arms, an hour and a half.
+bench-worker-memory-soak:
+	for opcache in 0 1; do \
+		$(MAKE) bench-worker-memory SOAK_SECONDS=$${SOAK_SECONDS:-900} OPCACHE=$$opcache || exit 1; \
+	done
+
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # Placement defaults to group, the one the docs/benchmarks.md numbers are taken
-# with: the harness's own default (1) runs ~20% slower on this route, which reads
-# as a regression next to them. Override via env, e.g. PIN_SERVERS=1.
+# with: the harness's own default (1) runs ~6.5% slower on this route (the pinning
+# section of docs/load-testing.md), which reads as a regression next to them.
 bench-http-load-stats-empty:
 	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
@@ -753,9 +772,11 @@ bench-swoole-load-soak:
 bench-swoole-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/swoole-load-stats.sh
 
-# WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
-# it with the Go ws-load generator on the "all" message (fans out across EVERY async
-# I/O feature per message), sampling CPU/memory + per-worker RSS (leak check). Both
+# WebSocket load test: start a ws-server pool under a worker master (SO_REUSEPORT, one
+# worker per core) and drive
+# it with the ws-load generator (a Rust crate, tests/benchmarks/ws/ws-load) on the
+# "all" message (fans out across EVERY async I/O feature per message), sampling
+# CPU/memory + per-worker RSS (leak check). Both
 # the pool and the generator run in the php container (no host tooling needed).
 # Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
 bench-ws-load-stats:

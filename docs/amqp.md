@@ -5,8 +5,9 @@ English | [Русский](amqp.ru.md)
 An asynchronous AMQP 0-9-1 client. The connection, the channels, the topology,
 publishing and consuming all live in the extension; PHP stays a thin
 orchestrator. Inside a `WaitGroup` dozens of publishes and consumers run at the
-same time; outside a fiber the same API works synchronously, as with every
-SConcur feature.
+same time as coroutines (closures that `WaitGroup` runs each in its own PHP Fiber);
+outside a fiber the same API works synchronously, as with every SConcur feature
+(a module under `src/Features/`).
 
 The gain is the consumer. In `ext-amqp` and in `php-amqplib` alike, consuming a
 queue holds the PHP thread: the worker is busy with one queue and can do nothing
@@ -87,17 +88,17 @@ Not every call goes to the broker:
 | Class | What it is | Goes to the broker |
 | --- | --- | --- |
 | `ConnectionOptions` | host, credentials, timeouts, TLS material — settled once, `readonly` | nothing, it is a value object |
-| `Connection` | the connection handle | `connect()`, `close()`, `channel()`, `usedChannels()` |
+| `Connection` | the connection handle | `connect()`, `channel()`; `close()` and `usedChannels()` stay inside the extension |
 | `Channel` | the channel handle; `Connection::channel()` opens the channel and hands it over | `prefetch()`, `publish()`, `publishConfirmed()`, `enableConfirms()`, `waitForConfirms()`, `ack()`/`nack()`/`reject()`, `get()`, `consume()`, `close()` |
 | `Queue` | a name and the channel to run on — a handle, built for free | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `purge()`, `publish()`, `publishConfirmed()`, `get()`, `consume()` |
 | `Exchange` | the same, for an exchange | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `publish()`, `publishConfirmed()` |
 | `Message` | the body and properties of a message being published | nothing, it is a value object |
-| `Delivery` | a delivered message, the means to settle it, and `channel()` — a channel to publish on | `ack()`, `nack()`, `reject()`; `channel()` opens one under a supervised consumer, once per handler |
+| `Delivery` | a delivered message, the means to settle it, and `channel()` — a channel to publish on | `ack()`, `nack()`, `reject()`; under the supervised consumer (`QueueConsumer`, [below](#a-supervised-consumer)) `channel()` lends one from a pool, opening a channel only when none is free |
 | `RetryTopology` | the wait queues a delayed publish goes through | `declare()` — the one call here that creates topology |
 
 `$channel->queue('orders')` and `$channel->exchange('events')` cost nothing and
-talk to nobody: the boundary is crossed exactly as often as a real AMQP method is
-called.
+talk to nobody: the PHP–extension boundary is crossed exactly as often as a real AMQP
+method is called.
 
 ## Connecting
 
@@ -150,8 +151,9 @@ The timeouts bound different things: `connectTimeoutSeconds` the dial,
 `writeTimeoutSeconds` a publish, `readTimeoutSeconds` a consumer's wait for the next
 delivery, and `rpcTimeoutSeconds` every other single method. They are seconds because
 that is the unit an AMQP URI and the broker's own documentation state them in; the wire
-carries milliseconds. `0` leaves the extension to apply its own default, and for
-`readTimeoutSeconds` it means "wait indefinitely".
+carries milliseconds. `0` leaves the extension's default — 10 s for the dial, 30 s for
+a publish and for every other method — and for `readTimeoutSeconds` it means "wait
+indefinitely".
 
 ## Topology
 
@@ -187,7 +189,7 @@ $channel->exchange('events')->delete(ifUnused: false);
 `declarePassive()` is the other half: it asks whether the queue or exchange
 exists, without creating or changing anything, and answers a missing one with a
 `404` that closes the channel. It is a separate call rather than a flag because
-it is a different question — and because a poll for a message count should not
+it is a different question — and because a check of the message count should not
 have to repeat every setting the queue was declared with.
 
 An empty queue name asks the broker to generate one; it arrives in the answer and
@@ -225,12 +227,13 @@ message it cannot route instead of dropping it — which only means something if
 something waits for the answer, and that is `publishConfirmed()`.
 
 `Message` is `readonly` and its properties are named constructor arguments, so a
-misspelled one is a TypeError at the call site rather than a property the broker
-never receives.
+misspelled one is an `Error` ("Unknown named parameter") at the call site rather than
+a property the broker never receives.
 
-A message nobody set a content type on carries none. AMQP distinguishes an absent
-property from an empty one, and `ext-amqp`'s habit of publishing `text/plain` for
-everything is not carried over.
+A message nobody set a content type on carries none — `ext-amqp`'s habit of publishing
+`text/plain` for everything is not carried over. An empty string counts as unset for
+every string property: it is not published, and one arriving from another client reads
+back as null.
 
 ## Publisher confirms
 
@@ -270,19 +273,17 @@ $queue->publishConfirmed(
 `retryDelaysSeconds` is read by attempt number — one second after the first failure,
 three after the second, four after the third — and it does not bound how many
 attempts there are: that is what `retries` is for. An attempt past the end of the
-list takes the last entry, so `[1, 3, 4]` backs off to four seconds and stays there
+list takes the last entry, so `[1, 3, 4]` reaches four seconds and stays there
 however many retries follow. The default is an empty schedule, which tries again at
 once.
 
 The two arguments are the same on all three objects that publish — `Channel`,
 `Queue` and `Exchange` — since all three end up in the same call.
 
-Only the three failures in the table above are retried, because they are the three
-the broker answered with. A channel or a connection that died raises past the loop
-on purpose: the handle is gone by then, every further attempt fails the same way,
-and retrying would spend the whole schedule to arrive at the exception the first
-attempt already had. Reopening is the application's decision, not something a
-publish makes behind it.
+Only the three failures in the table are retried — they are the broker's answers. A
+dead channel or connection raises past the loop: every further attempt would fail the
+same way, and reopening is the application's decision. A plain `publish()` takes no
+retry arguments for the same reason: it gets no answer to retry on.
 
 A retried confirm timeout can duplicate the message — the first attempt may have
 been stored and only the answer lost. That is the at-least-once AMQP offers anyway,
@@ -297,10 +298,6 @@ same way. So keep this schedule short, and where the work has to outlive the
 worker, put it on the broker instead: a message already in a [wait
 queue](#a-delayed-publish) is the broker's, and its publisher can go away
 entirely.
-
-There is nothing to retry on a plain `publish()`, which is why it takes no such
-argument: `basic.publish` expects no reply, so a publish that returns has said
-nothing, and one that raises did so because the channel is gone.
 
 Confirm mode is turned on by the first `publishConfirmed()`; `enableConfirms()`
 does it explicitly. AMQP has no way to turn it back off, and `waitForConfirms()` on
@@ -362,7 +359,7 @@ The full form:
 ```php
 $queue->consume(
     autoAck:     false,
-    consumerTag: '',        // empty asks the broker for one
+    consumerTag: '',        // empty: the extension generates sconcur-ctag-N
     exclusive:   false,
     noLocal:     false,
     arguments:   ['x-priority' => 10],
@@ -370,22 +367,18 @@ $queue->consume(
 ```
 
 The consumer must be read in the coroutine that opened it: when the coroutine
-ends its flow is stopped, and the extension cancels the consumer. This is the same
-caveat as for `HttpClient`, `SocketClient` and `WsClient`.
+ends, its flow (the group of its tasks inside the extension) is stopped, and the
+extension cancels the consumer. This is the same caveat as for `HttpClient`,
+`SocketClient` and `WsClient`.
 
-The loop ends quietly only when this coroutine's flow is stopped. Everything else
-that takes the consumer away raises: the broker cancelling it (its queue was
-deleted, a node failed over), the channel dying, and the connection's `readTimeoutSeconds`
-passing with nothing delivered. The last one is worth stating plainly, because it
-looks like an ending and is not: the queue is merely idle, so a wait that outran the
-deadline raises `QueueException` ("Consumer timeout exceed") rather than ending the loop —
-a worker that read the silence as "the queue is closed" would stop reading a queue that
-still has work coming. Leaving the loop cancels the consumer on the way out, as any other
-exit from it does; what is left behind is the queue, not a consumer nobody reads.
-
-That is the generator's contract. A worker that would rather keep pulling than handle
-those failures itself uses the [supervised consumer](#a-consumer-the-broker-takes-away),
-which reopens the queue instead of ending.
+The loop ends quietly only when this coroutine's flow is stopped. Everything else that
+takes the consumer away raises: the broker cancelling it (its queue was deleted, a node
+failed over), the channel dying, and `readTimeoutSeconds` passing with nothing
+delivered. The last is idleness, not an ending, so it raises `QueueException`
+("Consumer timeout exceed") instead of ending the loop as if the queue were closed. A
+worker that would rather keep pulling uses the
+[supervised consumer](#a-supervised-consumer), which
+[reopens](#a-consumer-the-broker-takes-away) the queue instead.
 
 Deliveries a consumer received but never acknowledged go back into the queue when
 the channel is closed, not when the consumer is cancelled — that is AMQP, not a
@@ -404,10 +397,9 @@ under that key, holding on to the delivery channel the driver fills from the soc
 Every turn of the `foreach` is a `next()` on that key — "the next delivery for this
 stream" — and the coroutine parks until it is answered.
 
-The waiting happens inside the extension, on the runtime task that runs the
-`next`, not by PHP
-polling the broker for a message. The
-PHP side sits in a single `waitAny()` that serves every parked coroutine at once:
+The waiting happens inside the extension, on the runtime task that runs the `next`,
+not by PHP polling the broker for a message. The PHP side sits in a single
+`waitAnyBatch()` that serves every parked coroutine at once:
 whichever answer becomes ready first is routed back to the coroutine that asked for
 it, and that coroutine is resumed with its `Delivery`.
 
@@ -427,7 +419,7 @@ sequenceDiagram
 
     H->>S: next(taskKey), the coroutine parks
     S->>G: next, returns at once
-    S->>S: waitAny() — one wait for every parked coroutine
+    S->>S: waitAnyBatch() — one wait for every parked coroutine
     Note over G,B: the runtime task waits on the driver's delivery channel
     B-->>G: delivery
     G-->>S: result
@@ -442,8 +434,7 @@ coroutine parked in between. A consumer is the same exchange left open.
 
 This is what makes a hundred consumer coroutines affordable in one process: none of
 them is running while it waits, and every answer comes back through the same wait
-point. It is also why the consumer has to be read in the coroutine that opened it —
-the stream belongs to that coroutine's flow, and stopping the flow cancels it.
+point.
 
 ## Settling a delivery
 
@@ -463,15 +454,14 @@ Each of the three settles one delivery. AMQP has a batch form as well — "and
 everything before this tag on the channel" — which this library does not offer: it
 pays off only while earlier deliveries are deliberately left unsettled, and that is
 the one moment nobody can tell a message still being worked on from one already
-finished. Under a [supervised consumer](#the-channel-a-handler-publishes-on) those
+finished. Under a [supervised consumer](#a-supervised-consumer) those
 earlier deliveries belong to the handlers running beside this one; on a channel of
-one's own they are whatever the caller fanned out and has not finished yet. The
-broker cannot undo a batch, and what it settled early is lost if the process dies.
+one's own they are whatever the caller started at the same time and has not finished
+yet. The broker cannot undo a batch, and what it settled early is lost if the process
+dies.
 
-Settling belongs to the delivery, not to the queue. An acknowledgement names its
-message by delivery tag on the channel it arrived on, so
-`$queue->ack($envelope->getDeliveryTag())` made the caller carry a number from one
-object to another and gave them the chance to carry the wrong one.
+Settling belongs to the delivery: it knows its tag and the channel it arrived on, so the
+caller never carries a delivery tag between objects.
 
 Settling twice is refused locally, before it reaches the wire: the broker answers
 a second acknowledgement of the same tag by closing the channel, which takes every
@@ -560,8 +550,9 @@ application's, with arguments this has no business guessing.
 
 ### A delay queue
 
-The standard shape. The main queue dead-letters into a queue nobody consumes; that
-queue expires its messages back into the main one:
+The same wait queue, wired by hand so that a refusal starts the delay: the main queue
+dead-letters into a queue nobody consumes, and that queue expires its messages back
+into the main one:
 
 ```php
 $main = $channel->queue('orders');
@@ -637,19 +628,17 @@ wait queue can serve delays that differ per message:
 $wait->publish(new Message($body, expiration: '300'));
 ```
 
-One caveat, and it is the broker's rather than this feature's: a queue expires its
-messages from the head. A message with a 1-second TTL sitting behind one with a
-10-second TTL leaves after ten seconds, not one. A growing backoff is therefore
-usually built as several wait queues with fixed TTLs — `orders.wait.1s`,
-`orders.wait.10s`, `orders.wait.60s` — with the handler choosing which one to
-dead-letter into by the attempt count, rather than as one queue with per-message
-expirations.
+The caveat from [a delayed publish](#a-delayed-publish) applies: a queue expires from
+its head, so a 1-second message behind a 10-second one leaves after ten. A delay that
+grows with each attempt is therefore several wait queues with fixed TTLs — what
+`RetryTopology` declares — with the handler picking one by the attempt count.
 
 ### Republishing with your own counter
 
 When the routing has to change, or the counter has to mean something of your own,
-republish instead of dead-lettering. `Message::fromDelivery()` rebuilds the message
-so only what you change differs:
+republish instead of dead-lettering. The example keeps the body and the headers and
+adds its own counter; `Message::fromDelivery()` copies every property when nothing
+has to change:
 
 ```php
 $attempt = ($delivery->header('x-attempt') ?? 0) + 1;
@@ -673,91 +662,7 @@ has to be yours, dead-letter when it does not.
 `Sleeper::usleep()` suspends the coroutine and not the process, so the other
 coroutines of the worker keep going. It is the right tool for tens of
 milliseconds and the wrong one for minutes: the delivery stays unacknowledged for
-the whole wait, holding its prefetch slot and counting against the broker as in
-flight.
-
-### Bounding one job
-
-A handler that hangs holds its coroutine for ever, and with a prefetch of one that
-coroutine will never take another message. `handlerTimeoutMs` puts a deadline on it:
-
-```json
-{
-  "queues": [{ "name": "orders", "coroutineCount": 8 }],
-  "prefetchCount": 1,
-  "handlerTimeoutMs": 30000
-}
-```
-
-A job that runs past it is unwound where it stands — the handler's `finally` blocks
-run — and the delivery is refused exactly like one whose handler threw, so
-`requeueOnFailure` decides where it goes and `onError` is told, with a
-`CoroutineTimeoutException`. The worker carries on and takes the next message; one
-slow job costs one message and not a consumer.
-
-Where the message goes is worth being sure about, because the default is the
-harshest of the three and it is easy to reach by accident:
-
-| The queue and the setting | What happens to the message |
-| --- | --- |
-| the default, no dead-letter exchange | dropped — refused without requeue, and nothing catches it |
-| the default, with a dead-letter exchange | sent there, to be looked at later |
-| `requeueOnFailure: true` | put back into the queue |
-
-So `handlerTimeoutMs` on a queue with no dead-letter exchange is a decision to throw
-the job away when it runs long. That is often right — it has already spent its
-budget — but it is a decision, and a queue carrying anything worth keeping wants a
-dead-letter exchange before it gets a deadline.
-
-`requeueOnFailure: true` and a deadline together are almost always a trap: a job that
-did not fit in thirty seconds will not fit in thirty seconds again, so it goes round
-for ever, and each round is slower than an ordinary failure because it burns the
-whole allowance first. If it has to go back, bound the rounds — a quorum queue with
-`x-delivery-limit` counts them, where `x-death` does not: a requeue is not a
-dead-letter hop, so the counter above never moves.
-
-None of this covers a message the broker never judged. A handler that could not be lent a
-channel at all, one whose connection went away mid-command, or one whose channel was
-already gone when it tried — nothing the broker said is about those messages, so they go
-back into the queue whatever the setting says. The policy above is for jobs that failed.
-A publish the broker refused with a reply code — a 404 to an exchange that is not there —
-is a verdict and follows the policy.
-
-Once, and no more. The last of the three is a guess: a channel dies from its connection
-going away and from what was asked of it alike, and this side cannot tell those apart at
-the moment it has to place the message. So the second chance is only ever given to a
-message the broker has not handed out before, and a handler that keeps killing its own
-channel sends its message to the policy on the next delivery instead of round for ever.
-The worker also asks the pool twice before giving up on a channel, because the first ask
-after a connection is lost is the one that discovers it.
-
-One thing this is not: a worker being stopped while a handler is still working. There
-the application never decided anything, so the message is not settled at all and
-comes back on its own — see [when the worker itself dies](#when-the-worker-itself-dies)
-for the difference between "the runtime answered for the job" and "nobody answered".
-
-One limit comes with it, from the mechanism underneath — see
-[coroutine timeout](coroutine-timeout.md). A handler already inside a broker call is not
-cut until that call returns: that one is bounded by the connection's own
-`rpcTimeoutSeconds` and `writeTimeoutSeconds`, which is a different setting and worth
-having as well. A handler busy with pure computation is cut only when the pool arms
-preemption while it consumes (`preemptionQuantumMs` above `0`; off by default).
-
-The same deadline is available inside a handler for a part of the work, without
-configuring the pool at all:
-
-```php
-use SConcur\Deadline;
-
-$queueConsumer->consume(
-    connection: $connection,
-    handler: static function (Delivery $delivery): void {
-        $enriched = Deadline::run(timeoutMs: 500, callback: fn() => enrich($delivery->body));
-
-        store($enriched);
-    },
-);
-```
+the whole wait and holds its prefetch slot.
 
 ### When the worker itself dies
 
@@ -782,11 +687,11 @@ after the crash: ready=3 consumers=0
 first back: body=boom redelivered=true
 ```
 
-Two things worth reading twice. Nothing was lost. And all three came back, not
-just the one being handled: the broker had handed out three, none were
-acknowledged, so all three are owed again. A worker holding a prefetch of fifty
-returns fifty. That is the other reason a pool of coroutines wants
-`prefetchCount: 1` — the price of a crash is one message per coroutine.
+Nothing was lost, and all three came back, not just the one being handled: the broker
+had handed out three, none were acknowledged, so all three are owed again. A worker
+holding a prefetch of fifty returns fifty. That is the other reason a pool of
+coroutines wants a prefetch of one — the price of a crash is one message per
+coroutine.
 
 Whether PHP dies on its own limit or is killed outright makes no difference here.
 The first prints a fatal error, the second runs no PHP at all; the safety net in
@@ -828,28 +733,6 @@ dropped, or dead-lettered where the queue names an exchange for it. This is the
 only mechanism here that catches a message which kills the process, and it needs no
 support from this library — those are ordinary queue arguments.
 
-`QueueConsumer`'s `maxMemoryBytes` is worth having but answers a different
-question. It is checked on every turn of the serve loop against
-`memory_get_usage()`, so it catches a worker that grew over a thousand messages
-and sends it into a clean stop that finishes the messages already taken. It does
-not catch a single job that allocates a gigabyte without pausing: nothing else
-runs while that loop runs, so the loop never gets to look. Set it well under
-`memory_limit` and treat it as a guard against creep, not against a spike.
-
-### What the supervised consumer does
-
-`QueueConsumer` settles what the handler left open — returning acknowledges,
-throwing refuses — and `requeueOnFailure` decides between putting the message back
-and letting it dead-letter. That is the whole of its policy: it counts no attempts
-and applies no backoff. A retry policy is the handler's, built out of the pieces
-above; the topology it needs belongs to the worker script, because the runtime
-declares nothing.
-
-`tests/consumers/amqp/amqp-consumer.php` is such a worker written out: it declares
-its wait queues alongside its own topology at start-up, and its `retry:<n>` handler
-republishes a failed job with a delay that grows by attempt, on [the channel it was
-lent](#the-channel-a-handler-publishes-on).
-
 ## Connections and channels inside the extension
 
 A connection is pooled by its options: two `Connection` objects built with the
@@ -857,9 +740,9 @@ same ones share a single socket to the broker, so building one per request is
 cheap. They share it in the broker's eyes as well — an exclusive queue declared
 through one is usable through the other. `connectionName` is part of the pool key,
 so naming a connection is how an application asks for one that is not shared.
-`connectTimeoutSeconds` is the one option left out of the key: it bounds the dial and
-nothing the broker ever sees. A pooled connection with no owners left is closed
-after five minutes of idling, and `close()` — or the destructor of a dropped
+The timeouts are left out of the key: `connectTimeoutSeconds` bounds only the dial,
+and the other three travel with each command. A pooled connection with no owners left
+is closed after five minutes of idling, and `close()` — or the destructor of a dropped
 object — gives up ownership.
 
 Channels are held in a registry keyed by an opaque id, so an acknowledgement may
@@ -867,9 +750,6 @@ come from another coroutine, and therefore another flow, than the consumer that
 received the message. A channel is closed by `close()`, by the destructor of a
 dropped `Channel`, when its connection dies, or by the sweeper that collects
 channels with no consumers that have run no command for 30 minutes.
-
-A delivery tag belongs to the channel that delivered the message. That is also why
-a channel is not shared between coroutines — give each coroutine its own.
 
 ## TLS and SASL EXTERNAL
 
@@ -957,22 +837,20 @@ $waitGroup->waitAll();
 ```
 
 Processes are the other axis: the [worker master](worker-master.md) supervises a
-pool of them running one script, and a consumer worker needs no listening socket
-to be supervised. Each process runs its own runtime and its own connection
+pool of forked workers that each run the group's role, and a consumer worker needs no
+listening socket to be supervised. Each process runs its own runtime and its own connection
 pool; nothing is shared between them.
 
 What bounds each axis:
 
 | Limit | Value | What to do about it |
 | --- | --- | --- |
-| channels per connection | 256 (`ConnectionOptions::MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine, and channel numbering starts at one, so a connection carries 255 consumers; a `connectionName` gives an application a connection of its own, and with it another 256 |
+| channels per connection | ceiling 256 (`ConnectionOptions::MAX_CHANNELS`); numbering starts at one, so 255 are usable, and the next open fails with a `ConnectionException` ("the maximum number of channels for this connection has been reached") | one channel per coroutine, so a connection carries 255 consumers; a `connectionName` gives an application a connection of its own, and with it another 255 |
 | one connection is one socket | every channel of a connection is multiplexed over it, and the driver serializes the frames it writes | spread the coroutines over several named connections before the socket, not the channel count, becomes the ceiling |
 | a process is one PHP thread | coroutines overlap the waiting, not the work: a handler that computes blocks the others while it runs | scale processes for CPU-bound handlers, coroutines for handlers that wait |
 
-Two rules the sections above state and this one depends on: a consumer is read in
-the coroutine that opened it, and a channel is not shared between coroutines —
-the commands of one channel are serialized, so ten coroutines on one channel are
-a queue of ten.
+Each coroutine needs its own channel: the commands of one channel are serialized, so
+ten coroutines on one channel are a queue of ten.
 
 ## A supervised consumer
 
@@ -994,24 +872,35 @@ acknowledgements of the handlers still running land, and the flow ending closes
 them.
 
 ```php
-// consumer.php
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
+use SConcur\Worker\WorkerGroupConfig;
 
-require __DIR__ . '/vendor/autoload.php';
+$orders = new WorkerGroupConfig(
+    name: 'orders',
+    role: static function (): void {
+        $queueConsumer = new QueueConsumer(
+            queues: json_encode([
+                ['name' => 'orders', 'coroutineCount' => 8],
+                ['name' => 'invoices', 'coroutineCount' => 2, 'prefetchCount' => 5],
+            ]),
+            prefetchCount: 1,
+            maxMessages: 10_000,
+        );
 
-// Everything about the queues comes from argv, which is how a master configures
-// its workers. The credentials do not: a password in argv is visible in `ps`.
-$queueConsumer = QueueConsumer::fromArgs($_SERVER['argv']);
+        // Opened in the worker, never before the master forks: a connection is not
+        // something workers can share.
+        $connection = new Connection(getenv('RABBITMQ_DSN'));
 
-$connection = new Connection(getenv('RABBITMQ_DSN'));
-
-$queueConsumer->consume(
-    connection: $connection,
-    handler: static function (Delivery $delivery): void {
-        handle($delivery->body);
+        $queueConsumer->consume(
+            connection: $connection,
+            handler: static function (Delivery $delivery): void {
+                handle($delivery->body);
+            },
+        );
     },
+    workerCount: 2,
 );
 ```
 
@@ -1020,56 +909,58 @@ refuses it.** A handler that settled it itself — a selective reject, an ack be
 some slow follow-up work — is left alone, because a delivery knows whether it has
 been settled.
 
-The group that runs it:
+A handler that throws is reported through the optional `onError` callback (without
+one, it is logged) and costs one message, not the worker: the runtime refuses the
+delivery and the next message is handled as usual.
 
-```json
-{
-  "name": "orders",
-  "workerScript": "/app/consumer.php",
-  "workerCount": 2,
-  "server": {
-    "queues": [
-      { "name": "orders", "coroutineCount": 8 },
-      { "name": "invoices", "coroutineCount": 2, "prefetchCount": 5 }
-    ],
-    "prefetchCount": 1,
-    "maxMessages": 10000
-  }
-}
-```
+The constructor's parameters; `QueueConsumer::fromArgs($argv)` takes the same as
+`--name=value` flags, for a script that runs one consumer on its own:
 
-| Flag | Default | Purpose |
+| Parameter | Default | Purpose |
 | --- | --- | --- |
-| `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
+| `queues` | — (required) | The queues and their weights, as JSON: a list of objects with `name`, `coroutineCount` (default 1) and an optional `prefetchCount`. |
 | `prefetchCount` | `1` | Unacknowledged messages one consumer may hold, unless its queue names its own. It is also what bounds how many handlers run at once: a message stays unacknowledged for as long as its handler runs. |
 | `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the worker takes the next message — see [bounding one job](#bounding-one-job). |
-| `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
-| `maxMessages` | `0` (no limit) | Finish the running handlers and exit after this many messages. |
+| `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and delays belongs to the handler — see [retries and delays](#retries-and-delays). |
+| `maxMessages` | `0` (no limit) | Finish the running handlers and exit after this many messages. Exact on its own; under the master spread up to half again, see [restart policy](worker-master.md#restart-policy-and-maxrequests). |
 | `maxRuntimeSeconds` | `0` (no limit) | Finish the running handlers and exit after this long. |
-| `maxMemoryBytes` | `0` (no limit) | Finish the running handlers and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
+| `maxMemoryBytes` | `0` (no limit) | Finish the running handlers and exit once the PHP heap passes this. A guard against creep, not against a spike. |
 | `preemptionQuantumMs` | `0` (off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
-| `masterPid` | none | Injected by the master; the worker stops, finishing the running handlers, as soon as it is orphaned. |
+| `masterPid` | none | The master to watch; none — the master that forked this worker (`WorkerContext`). The worker stops, finishing the running handlers, as soon as it is orphaned. |
 
 `coroutineCount` is a queue's weight: how many consumers it gets, each on a channel
-of its own. The name is what the flag has always been called and the master's
-configs carry it; what it counts is consumers, and a handler still runs in a
-coroutine of its own per message.
+of its own. Despite the name it counts consumers; each message still runs in a
+coroutine of its own.
+
+`maxMemoryBytes` is checked on every turn of the serve loop against
+`memory_get_usage()`, so it catches a worker that grew over a thousand messages and
+sends it into a clean stop that finishes the messages already taken. It does not catch
+a single job that allocates a gigabyte without pausing: a job that never yields keeps
+the serve loop from running, so the check never happens. Set it well under
+`memory_limit`; what a job that kills the process costs is in
+[when the worker itself dies](#when-the-worker-itself-dies).
 
 `queues` is a list of objects rather than a delimited string because AMQP allows
 almost any UTF-8 in a queue name, colons included — names like `tenant:1:orders`
-are ordinary, and any separator inside a name would make the parse ambiguous. The
-master JSON-encodes it into the flag; there is no shell on the way.
+are ordinary, and any separator inside a name would make the parse ambiguous. It is
+given as JSON, to the constructor or, for a consumer run on its own through
+`fromArgs()`, as one `--queues` flag.
 
 The list is validated before the first `basic.consume`: a missing or duplicated
 name, a weight below one, and the channel budget — a consumer is a channel, and one
 connection carries 255 of them, so a worker asking for more is told at startup
-instead of meeting `504 channel id space exhausted` under load.
+instead of failing to open a channel under load.
 
 What it does not do: declare anything. Topology belongs to whoever owns it, and a
 consumer that redeclared a queue with the wrong flags would take the channel down
-with a `406` instead of consuming — so the worker script declares what it owns
-before handing over, and `queueSpecs()` tells it what that is. A pool started
-before anything published into its queue would otherwise crash-loop on a `404`.
+with a `406` instead of consuming — so the role declares what it owns
+before handing over, and `queueSpecs()` tells it what that is. Otherwise a pool
+started before its queue exists would exit on a `404` and be restarted over and over.
+Nor does it count attempts or wait between them: a retry policy is the handler's,
+built from [retries and delays](#retries-and-delays).
+`tests/consumers/amqp/amqp-consumer.php` is such a worker: it declares its wait queues
+at start-up, and its `retry:<n>` handler republishes a failed job with a growing delay
+on [the channel it was lent](#the-channel-a-handler-publishes-on).
 
 The pool reports itself to the [panel](admin-stats.md) like any server: how many
 consumers it has open, what they delivered, acknowledged and refused, and how long
@@ -1089,7 +980,7 @@ itself.
 
 The lent channel goes back to the pool when the handler returns, so it must not be
 stored past that. A `Delivery` an application kept beyond its handler answers
-`null` from `channel()`, exactly as it does for a channel that was closed.
+`null` from `channel()`.
 
 It goes back only if the broker owes it nothing. A publisher confirm, and the return
 of a mandatory message, sit on the channel until someone waits for them — and that
@@ -1107,23 +998,21 @@ at once, take a channel per coroutine from the connection.
 
 They are opened lazily and reused, so a worker opens at most one per handler
 publishing at the same time. A channel nothing has needed for ten minutes is given
-up again, one per message settled, so a worker that was busy once does not hold
-that burst's channels — and the sockets under them — for the rest of its life.
+up again, one each time a handler hands its channel back, so a worker that was busy
+once does not hold that burst's channels — and the sockets under them — for the rest
+of its life.
 
 They live on connections of the pool's own — one more socket per 255 channels —
 so they never compete with the consumers for the delivery connection's channel
 numbers, and no combination of weight and prefetch is refused for wanting too
 many: `prefetchCount: 50` over eight consumers can put 400 handlers to work at
-once, and the pool answers with two extra sockets instead of a
-`504 channel id space exhausted`.
+once, and the pool answers with two extra sockets instead of a refused channel open.
 
-The price is those channels and sockets, not throughput. Measured against the
-shared channel it replaced — one queue, a prefetch of 10, every handler
-publishing with confirms, broker on the same machine — the lent channel is not
-slower: it is reused, so a message pays no extra round trip, and a
-`waitForConfirms()` on a channel of one's own waits for one message instead of
-for every publish still unconfirmed on the channel. The difference between the
-two ran inside the spread of the runs themselves.
+The price is those channels and sockets, not throughput: against the shared channel it
+replaced (one queue, prefetch 10, every handler publishing with confirms, broker on the
+same machine) the difference stayed within the run-to-run spread. A lent channel is
+reused, so a message pays no extra round trip, and `waitForConfirms()` on it waits for
+one message, not for every unconfirmed publish on a shared channel.
 
 ### Stopping
 
@@ -1135,28 +1024,108 @@ them with the cancel would hand a finished message back for another worker to do
 again.
 
 Finishing the running handlers has no deadline of its own. A handler that never
-ends is what the master's `shutdownTimeoutMs` is for — past it the worker is
+ends is what the group's `shutdownTimeoutMs` (`WorkerGroupConfig`) is for — past it the worker is
 killed, and the messages it was holding go back to the broker unacknowledged,
 exactly as with the servers.
 
-A handler that throws is reported through the optional `onError` callback and costs
-one message, not the worker: the runtime refuses the delivery and the next message
-is handled as usual.
+### Bounding one job
+
+A handler that hangs holds its coroutine for ever, and with a prefetch of one that
+coroutine will never take another message. `handlerTimeoutMs` puts a deadline on it:
+
+```php
+$queueConsumer = new QueueConsumer(
+    queues: json_encode([['name' => 'orders', 'coroutineCount' => 8]]),
+    prefetchCount: 1,
+    handlerTimeoutMs: 30_000,
+);
+```
+
+A job that runs past it is unwound where it stands — the handler's `finally` blocks
+run — and the delivery is refused exactly like one whose handler threw, so
+`requeueOnFailure` decides where it goes and `onError` is told, with a
+`CoroutineTimeoutException`. The worker carries on and takes the next message; one
+slow job costs one message and not a consumer.
+
+Where the message goes is worth being sure about, because the default is the
+harshest of the three and it is easy to reach by accident:
+
+| The queue and the setting | What happens to the message |
+| --- | --- |
+| `requeueOnFailure: false` (default), the queue names no dead-letter exchange | dropped — refused without requeue, and nothing catches it |
+| `requeueOnFailure: false` (default), the queue names a dead-letter exchange | sent there, to be looked at later |
+| `requeueOnFailure: true` | put back into the queue |
+
+So `handlerTimeoutMs` on a queue with no dead-letter exchange is a decision to throw
+the job away when it runs long. That is often right — it has already spent its
+budget — but it is a decision, and a queue carrying anything worth keeping wants a
+dead-letter exchange before it gets a deadline.
+
+`requeueOnFailure: true` and a deadline together are almost always a trap: a job that
+did not fit in thirty seconds will not fit in thirty seconds again, so it goes round
+for ever, and each round is slower than an ordinary failure because it burns the
+whole allowance first. If it has to go back, bound the rounds — a quorum queue with
+`x-delivery-limit` counts them, where `x-death` does not: a requeue is not a
+dead-letter hop, so the [`x-death` counter](#the-attempt-count-comes-from-the-broker)
+never moves.
+
+Three failures leave a message the broker never judged, and it goes back into the queue
+whatever the setting says: the handler could not be lent a channel, its connection went
+away mid-command, or its channel was already gone when it tried. The last is a guess — a
+channel also dies over what was asked of it — so this second chance goes only to a
+message that is not a redelivery; on its next delivery it follows the policy, so a
+handler that keeps killing its channel cannot loop. A publish the broker refused with a
+reply code (a 404 to a missing exchange) is a verdict and follows the policy. The worker
+asks the pool for a channel twice before giving up, because the first ask after a
+connection is lost is the one that discovers it.
+
+One thing this is not: a handler cut short because the worker is being stopped hard,
+past the [graceful stop](#stopping). There the application never decided anything, so
+the message is not settled at all and comes back on its own — see [when the worker
+itself dies](#when-the-worker-itself-dies) for the difference between "the runtime
+answered for the job" and "nobody answered".
+
+One limit comes with it, from the mechanism underneath — see
+[coroutine timeout](coroutine-timeout.md). A handler already inside a broker call is not
+cut until that call returns: that one is bounded by the connection's own
+`rpcTimeoutSeconds` and `writeTimeoutSeconds`, which is a different setting and worth
+having as well. A handler busy with pure computation is cut only when the worker arms
+[automatic preemption](coroutine-switching.md#automatic-preemption) — the extension
+interrupting a coroutine that runs too long without waiting — while it consumes
+(`preemptionQuantumMs` above `0`; off by default).
+
+The same deadline is available inside a handler for a part of the work, without
+configuring the worker at all:
+
+```php
+use SConcur\Deadline;
+
+$queueConsumer->consume(
+    connection: $connection,
+    handler: static function (Delivery $delivery): void {
+        $enriched = Deadline::run(timeoutMs: 500, callback: fn() => enrich($delivery->body));
+
+        store($enriched);
+    },
+);
+```
 
 ### A consumer the broker takes away
 
 More than a deleted queue ends a consumer: a channel dies over an unrelated `404`, or a
 cluster node fails over. The consumer is opened again on a fresh channel a second later,
-for as long as reopening can work, and says so each time:
+for as long as reopening can work. The loss is logged once, and every failed attempt
+after it once a second:
 
 ```
 amqp: consumer orders (sconcur-ctag-7) was taken away; reopening
+amqp: consumer orders could not be reopened
 ```
 
 There is no attempt limit. A queue that was deleted and never recreated is retried for as
-long as the worker runs, one line a second per consumer on it — which is deliberate: a
-queue that comes back is picked up without anyone intervening, and a queue that does not
-is visible in the journal rather than silently unread.
+long as the worker runs — deliberately: a queue that comes back is picked up without
+anyone intervening, and one that does not is visible in the log rather than silently
+unread.
 
 The one failure that is not retried is the first open. A queue that is not there when
 the worker starts, or credentials that cannot consume it, end the run at once: that is a
@@ -1220,7 +1189,7 @@ for instead of the encoder refusing it.
 
 Every broker failure is a `SConcur\Exceptions\Amqp\AmqpException`, and the reply
 code the broker named is the exception's own code. The exceptions to that are the
-last six rows of the table — configuration bugs, not broker ones:
+last six rows of the table — usage bugs, not broker failures:
 
 ```php
 use SConcur\Exceptions\Amqp\QueueException;
@@ -1237,7 +1206,7 @@ try {
 | What happened | Exception | Code |
 | --- | --- | --- |
 | the broker refused the method (404, 406, …) | `QueueException`, `ExchangeException`, `ChannelException` — the one of the call | the reply code |
-| the broker answered with a code that closes the connection (320, 402, 5xx), or the connection died | `ConnectionException` | the reply code; a connection that dropped mid-frame reports the driver's own `501`, and only a failure nobody put a code on reports 0 |
+| the broker answered with a code that closes the connection (320, 402, 5xx), or the connection died | `ConnectionException` | the reply code the broker sent (320 when it shuts down); a dropped socket, a missed heartbeat or a failed dial carries none and reports 0 — `501` only when the broker sent a malformed frame |
 | the channel is gone — the broker closed it over an earlier failure | `ChannelException` | the reply code that closed it, 0 when the broker named none |
 | a publish was nacked, returned, or never confirmed | `PublishNackedException`, `UnroutableMessageException`, `PublishConfirmTimeoutException` | the reply code of a return, 0 otherwise |
 | the runtime could not lend a handler a channel of its own | `ChannelLoanException` | 0 |
@@ -1250,19 +1219,20 @@ try {
 | one delivery is asked for a channel from two coroutines at once | `ConcurrentDeliveryUseException` | 0 |
 
 The last six are `LogicException`s rather than `AmqpException`s: nothing was sent, the
-broker was never asked, and there is no reply code to carry — they are bugs in how the
-connection or the worker was described.
+broker was never asked, and there is no reply code to carry — they are bugs in the
+calling code: an option, an argument or a delivery used the wrong way.
 
 A failure the broker punishes with a closed channel (a passive declare of a queue
 that does not exist, a publish to a missing exchange) leaves the `Channel` closed:
 `isOpen()` reports it, every later call on it raises `ChannelException`, and the
-side has already released it. Open a new channel to carry on — the connection is
+extension has already released it. Open a new channel to carry on — the connection is
 untouched.
 
-That exception names what closed the channel when the broker said so, which is the only
-way to see the cause of a failure that carries no reply of its own: `basic.publish`
-expects none, so a publish to an exchange that is not there is answered by the channel
-going away, and the reply code lands on whatever ran next.
+When the channel died without this side seeing it, the next command's
+`ChannelException` names what closed it — the only way to see the cause of a failure
+that has no reply of its own: `basic.publish` expects none, so a publish to an exchange
+that is not there is answered by the channel going away, and its reply code lands on
+whatever runs next.
 
 A connection that died ends the same calls differently: a command on one of its channels
 raises `ConnectionException`, and so does a consumer whose stream it took with it — except
@@ -1302,7 +1272,7 @@ The API is SConcur's own, not either library's. What moves where:
 | `pconnect()`, `pdisconnect()` | — | — persistent connections are a php-fpm notion; the extension-side pool outlives the PHP object anyway |
 | `AMQP_*` bit masks | positional booleans | named arguments and `ExchangeTypeEnum` |
 
-Neither extension is required at runtime. `ext-amqp` stays a `require-dev`
+Neither library is required at runtime. `ext-amqp` stays a `require-dev`
 dependency because one test exchanges real messages with it on a live broker and
 compares every property, header and field-table entry
 (`tests/feature/Features/Amqp/AmqpBehaviourParityTest.php`) — the two
@@ -1335,9 +1305,9 @@ The general limits of the library are in the
 - AMQP transactions are not implemented. Publisher confirms replaced them, and the
   broker's own documentation recommends against them.
 - A consume is bounded by the connection's `readTimeoutSeconds`, not by a per-call one.
-- Publisher confirms and returned messages that no wait collects are dropped past
-  1024 and 128 respectively: a returned message carries its whole body, and a
-  publisher that never waits would otherwise fill the heap.
+- A channel keeps at most 1024 publisher confirms and 128 returned messages that no
+  wait has collected, and drops the oldest beyond that: a returned message carries its
+  whole body, and a publisher that never waits would otherwise fill the heap.
 - The `x-delayed-message` exchange type of the community delayed-message plugin
   cannot be declared: `ExchangeTypeEnum` is closed to the four types AMQP 0-9-1
   itself defines. The delay patterns that need no plugin are in
@@ -1365,10 +1335,6 @@ also crosses the boundary, and there is nothing to overlap. `basic.get`
 does wait for the broker, and running the calls at the same time recovers most of
 that.
 
-What none of those tables measure is the reason this feature exists. They pit one
-call against one call on a queue that already has its messages, where concurrency
-has nothing to hide behind. The gain is a worker that waits on several queues at
-once: consuming holds the PHP thread in both `ext-amqp` and `php-amqplib`, so a
-process is pinned to one queue, while here the same loop suspends only its
-coroutine — three consumers waiting on a 200 ms delay finish in one delay, not
-three, which is what `tests/feature/Features/Amqp/AmqpConsumeTest.php` measures.
+None of those tables measures the reason this feature exists — one worker waiting on
+several queues at once: three consumers waiting on a 200 ms delay finish in one delay,
+not three, which is what `tests/feature/Features/Amqp/AmqpConsumeTest.php` measures.

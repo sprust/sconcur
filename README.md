@@ -30,10 +30,9 @@ builds the PHP values of the result itself.
 ## Numbers against RoadRunner and Swoole
 
 The same demo application on the same machine: `wrk` 4 threads / 256 connections
-/ 20 s, database data on disk. The worker count per server is given in the row:
-the empty response was measured at 12, while `/db` and `/db-rw` come from the
-worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
-generator does not yet share cores with the servers):
+/ 20 s, database data on disk. Each row gives the worker count per server; `/db`
+and `/db-rw` are the 8-worker rung of the worker-count ladder, where the load
+generator does not yet share cores with the servers:
 
 | Request | SConcur | RoadRunner | Swoole |
 | --- | ---: | ---: | ---: |
@@ -47,7 +46,7 @@ existing PHP drivers: whatever the hooks do not cover blocks the whole worker (a
 mature Rust driver, which makes new features easier to add and to maintain.
 
 Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
-handlers — is listed just as plainly in
+handlers — is listed just as plainly in the table
 ["Is SConcur for you?"](docs/positioning.md#is-sconcur-for-you), next to the
 [feature benchmarks](docs/benchmarks.md) and the
 [behaviour under load](docs/load-testing.md).
@@ -60,8 +59,9 @@ operations take two seconds.
 
 SConcur runs such operations at the same time. You swap the blocking calls for
 SConcur equivalents (see [What it replaces](#what-it-replaces)), wrap them in
-coroutines, and the work moves into the extension and runs there in parallel. The
-total time is bound by the slowest operation, not by their sum. PHP stays a thin
+coroutines (closures that `WaitGroup` runs each in its own PHP Fiber), and the
+work moves into the extension and runs there in parallel. The total time is
+bound by the slowest operation, not by their sum. PHP stays a thin
 orchestration layer; all concurrency lives below it.
 
 ## Example
@@ -128,15 +128,14 @@ Long-lived servers:
 
 ## How it works
 
-`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called,
-the coroutine suspends and the task goes to the extension, onto its own runtime
-task. Every `WaitGroup` owns one flow — the group of tasks that belong to it on
-the extension side.
-A single process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it
-blocks until the first result of any flow is ready, picks up the results that
-are already ready together with it in one crossing of the boundary, and resumes
-the matching coroutines by `taskKey`. Results arrive in task-completion order,
-not in `add()` order.
+`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called, the
+coroutine suspends and the task goes to the extension, onto its own runtime task.
+Every `WaitGroup` owns one flow — the group of tasks that belong to it on the
+extension side. A single process-wide `Scheduler` waits on the extension
+(`waitAnyBatch`): it blocks until the first result of any flow is ready, picks up the
+results that are already ready together with it in one crossing of the boundary, and
+resumes the coroutine each result belongs to (the result carries its owner). Results
+arrive in task-completion order, not in `add()` order.
 
 The number of concurrently live coroutines in a group is unlimited by default.
 To bound memory or a DB connection pool, set a limit:
@@ -150,11 +149,9 @@ lifecycle — in [docs/architecture.md](docs/architecture.md).
 
 The whole concurrency model reduces to one primitive: a channel. Every task runs
 as its own task on the runtime, and the results of every flow land in one shared
-bounded channel. PHP runs no event loop and polls nothing — the single
-process-wide `Scheduler` blocks reading a message from that channel
-(`waitAnyBatch`) and wakes on the first ready result, taking the results that
-are already ready with it in the same crossing. Which task finished first is
-decided by the channel; PHP only resumes the matching coroutine by `taskKey`.
+bounded channel. PHP runs no event loop and polls nothing: the `Scheduler` blocks
+on that channel as described above. Which task finished first is decided by the
+channel; PHP only resumes the matching coroutine.
 
 Everything else follows from that:
 
@@ -164,14 +161,17 @@ Everything else follows from that:
 - Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
   lapin, fastwebsockets — and run concurrently right away. No waiting for async
   PHP drivers or extensions.
-- The C glue does not grow per feature. It exports the task calls (`push`,
-  `next`, `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the
-  lifecycle (`ping`, `version`, `destroy`) and the preemption switch
-  (`armPreemption`/`disarmPreemption`). A new feature is data (a `MethodEnum`
-  value, a payload DTO, a Rust handler), not a new C symbol. A long-lived
-  server or consumer adds a control function or two, like `httpStopAccepting`,
-  which stops accepting new connections while the ones in progress are
-  finished.
+- The C glue does not grow per feature. It exports the task calls (`push`, `next`,
+  `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the lifecycle
+  (`ping`, `version`, `destroy`), the preemption switch
+  (`armPreemption`/`disarmPreemption`: the timer that lets the scheduler pause a busy
+  coroutine, see [coroutine switching](docs/coroutine-switching.md)) and process
+  control (`process`: fork, reap, signals — what a worker master needs, synchronous
+  and without the runtime, since a process that forks must not run threads). A new
+  feature is data (a `MethodEnum` value, a payload DTO, a Rust handler), not a new C
+  symbol, and so is a new process command. A long-lived server or consumer adds a
+  control function or two, like `httpStopAccepting`, which stops accepting new
+  connections while the ones in progress are finished.
 - One transport and one streaming model for everything: payload DTOs plus the
   streaming states behind `next()` — MongoDB cursors, HTTP client bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
@@ -180,8 +180,9 @@ Everything else follows from that:
   same function. The same call works inside a `WaitGroup` (concurrent) and
   outside it (an ordinary blocking call); concurrency is chosen by the caller,
   not by the feature author.
-- A feature gets the runtime for free: nested coroutines, context cancellation,
-  deadline propagation, graceful shutdown with unwinding.
+- A feature gets the runtime for free: nested coroutines, cancellation of its
+  tasks when their group stops, coroutine deadlines, graceful shutdown with
+  unwinding.
 - Client and server features expose PSR interfaces (PSR-7/17, PSR-18) with
   injected factories, so they drop into any application without adapters.
 
@@ -212,13 +213,17 @@ Everything else follows from that:
   process on the assumption that one PHP thread issues every call, while the PHP
   side numbers flows with a class static that a ZTS build gives each thread a
   copy of — two request threads would collide on the same flow key.
-- Linux only — core-count detection, signals/`posix`, `SO_REUSEPORT`, the
-  master's `flock`.
+- Linux only — core-count detection, `/proc`, `SO_REUSEPORT`, the master's
+  `flock`.
 - `exit()`/`die()` with active tasks is safe but loses their results. The
   shutdown handler unwinds unfinished coroutines (finally blocks run,
   transactions roll back, cursors and flows are released), then the process exits
   normally. Better to run tasks to completion or stop them explicitly
   (`WaitGroup::stop()`).
+- A `WaitGroup` left without a wait — the code that filled it throws or returns
+  first — is not stopped when its variable goes: its running members hold it and
+  run to their own end, and one that never ends lives as long as the process. Wait
+  for the group or call `stop()` in a `finally`.
 - Concurrent mode is optional. Any feature can be called outside a `WaitGroup` as
   an ordinary synchronous call: outside a Fiber `FeatureExecutor` detects the
   non-async context and simply waits for the result (`Extension::wait`).
@@ -261,12 +266,11 @@ The crates the core is built on:
 
 ## Documentation
 
-- [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`,
-  `sconcur-server`.
+- [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`.
 - [Architecture](docs/architecture.md) — Fiber ↔ runtime task, the scheduler, the
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
-  the servers' opt-in automatic preemption for CPU-bound code.
+  the opt-in automatic preemption of the long-lived workers, for CPU-bound code.
 - [Coroutine timeout](docs/coroutine-timeout.md) — `Deadline::run()` and
   `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.
@@ -291,8 +295,8 @@ The crates the core is built on:
   commands, cursors, pub/sub.
 - [Files](docs/files.md) — file operations off the PHP thread: reads and writes,
   metadata, directories, streams and a chunked writer.
-- [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
-  (`bin/sconcur-server`).
+- [Worker master](docs/worker-master.md) — a supervisor for pools of workers, built in
+  the process that loaded the application; every worker is a fork of it.
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,
   Prometheus.
 - [How to add a new feature](docs/adding-a-feature.md) — step by step, with and
@@ -305,12 +309,11 @@ The crates the core is built on:
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O
   features at once.
+- [Benchmark catalog](docs/bench-catalog.md) — every benchmark, soak and profiler as a
+  file tree: how to run each and what it is for.
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 - [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
-  gate it had to pass and what it measured.
-- [SConcur for Laravel](https://github.com/sprust/sconcur-laravel) — a separate
-  package: a concurrent HTTP worker, an application whose state is per coroutine,
-  and Eloquent, cache, queues and WebSocket on top of SConcur's features.
+  bar it had to clear and what was measured.
 
 ## Build
 
@@ -321,9 +324,11 @@ make ext-build
 ```
 
 ## echo test
+
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```
+
 ## Roadmap
 
 In the order it is meant to happen:
@@ -337,12 +342,12 @@ In the order it is meant to happen:
 - The `Std` feature — SConcur equivalents of the remaining standard PHP
   functions that block the worker: password hashing, plus sleep, which absorbs
   `Sleeper`. File I/O is done and shipped as [Files](docs/files.md). json, gzip
-  and hash are candidates behind a benchmark gate, not a promise: their native
-  implementations are C already, and what the extension buys there is a free PHP
-  thread, not speed.
+  and hash are candidates, not a promise: each has to pass a benchmark first.
+  Their native implementations are C already, and what the extension buys there
+  is a free PHP thread, not speed.
 
 Deferred on purpose: splitting the core and the features into separate packages,
-and optimizing the synchronous path (a call outside a coroutine going to the
-extension directly, bypassing the scheduler and the Fiber machinery). Both are
-worth doing; neither moves a single verdict in
+and optimizing the synchronous path (a call outside a coroutine opens a task group
+of its own and costs three calls into the extension: `push`, `wait`, `stopFlow`).
+Both are worth doing; neither moves a single verdict in
 [positioning](docs/positioning.md#is-sconcur-for-you).

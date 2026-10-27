@@ -154,7 +154,7 @@ async fn handle_serve(task: Task) {
     };
 
     let listener =
-        match crate::features::httpserver::listen::listen(&payload.address, payload.reuse_port) {
+        match crate::features::httpserver::listen::open(&payload.address) {
             Ok(listener) => listener,
             Err(error) => {
                 task.add_result(Result::error(message, ERRORS.by_err("listen", error)))
@@ -238,7 +238,7 @@ async fn handle_serve(task: Task) {
 }
 
 async fn accept_loop(
-    listener: tokio::net::TcpListener,
+    mut listener: crate::features::httpserver::listen::Listener,
     message: Arc<Message>,
     config: Config,
     connections: mpsc::Sender<ConnectionEvent>,

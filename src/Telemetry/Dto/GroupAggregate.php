@@ -10,7 +10,7 @@ namespace SConcur\Telemetry\Dto;
  * nothing but memory and CPU — so the totals that matter are per group.
  *
  * The grouping comes from the label a worker puts on its snapshots, "<group>:<slot>"
- * (WorkerGroup::buildEnv).
+ * (WorkerGroup::workerEnvironment).
  */
 readonly class GroupAggregate
 {

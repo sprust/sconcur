@@ -22,6 +22,7 @@ use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpFailure;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 use WeakReference;
@@ -43,9 +44,9 @@ use WeakReference;
  * that publishes is lent a channel nobody else holds (PublishChannelPool); what it does
  * there cannot reach its neighbours, whatever the prefetch.
  *
- * Built to be supervised: the constructor takes scalars so fromArgs() can fill them from the
- * argv a WorkerMaster hands its workers, and the run ends on SIGTERM, on a life limit or on
- * losing the master.
+ * Built to be supervised: a WorkerMaster group's role builds and runs it, and the run ends on
+ * SIGTERM, on a life limit or on losing the master. The constructor takes scalars, so
+ * fromArgs() can fill them from argv for a script that runs one on its own.
  *
  * It declares nothing. Topology belongs to whoever owns it, and a consumer that redeclared a
  * queue with the wrong flags would take the channel down with a 406.
@@ -113,7 +114,11 @@ class QueueConsumer
      *                                    dead-letters it, or drops it where the queue names
      *                                    no exchange; true puts it back, which loops forever
      *                                    on a message that always fails
-     * @param int    $maxMessages         drain and stop after this many
+     * @param int    $maxMessages         drain and stop after this many. Under a worker
+     *                                    master each worker stops at a number drawn
+     *                                    between it and half again as many, so a pool does
+     *                                    not restart as one (Scheduler::spreadLimit(),
+     *                                    docs/worker-master.md)
      * @param int    $maxRuntimeSeconds   drain and stop after this long
      * @param int    $maxMemoryBytes      drain and stop once the PHP heap passes this
      * @param int    $preemptionQuantumMs what lets $handlerTimeoutMs and a stop reach a
@@ -124,7 +129,8 @@ class QueueConsumer
      *                                    stops being the handler's own (see
      *                                    docs/coroutine-switching.md)
      * @param ?int   $masterPid           when set, the worker drains as soon as it is
-     *                                    orphaned; the master injects it as --masterPid
+     *                                    orphaned; null is the master that forked this
+     *                                    worker (WorkerContext), or none outside a master
      */
     public function __construct(
         protected string $queues = '',
@@ -140,8 +146,9 @@ class QueueConsumer
     }
 
     /**
-     * The queues this consumer will pull, parsed and validated — which is what the worker
-     * script declares before handing over, since the runtime declares nothing.
+     * The queues this consumer will pull, parsed and validated — which is what the role (or
+     * a script running the consumer on its own) declares before handing over, since the
+     * runtime declares nothing.
      *
      * @return list<QueueSpec>
      */
@@ -151,8 +158,8 @@ class QueueConsumer
     }
 
     /**
-     * Builds a consumer from the worker's argv (`--queues=…`, `--prefetchCount=…`, and
-     * the `--masterPid` the master appends).
+     * Builds a consumer from argv (`--queues=…`, `--prefetchCount=…`, `--masterPid=…`), for
+     * a script that runs one on its own.
      *
      * @param array<int, string> $argv
      */
@@ -186,11 +193,9 @@ class QueueConsumer
             $connection->connect();
         }
 
-        $stopRequested = false;
-
-        // Installed before the stream opens, so a signal arriving during startup is not the
+        // Watched before the stream opens, so a signal arriving during startup is not the
         // one that gets lost.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         $flowKey   = uniqid('amqp_', more_entropy: true);
         $startedAt = microtime(true);
@@ -235,8 +240,6 @@ class QueueConsumer
                 $this->maxMessages,
             ));
 
-            $masterPid = $this->masterPid;
-
             // The stream's own failure carries the scope the extension side put on it and reaches
             // here as the generic task failure every feature gets. Left that way, a worker
             // whose broker went down would report a task error instead of a
@@ -267,10 +270,8 @@ class QueueConsumer
                             handled: $handled,
                         );
                     },
-                    shouldStop: function () use (&$stopRequested, $masterPid, $startedAt): bool {
-                        return $stopRequested
-                            || ($masterPid !== null && static::isOrphaned($masterPid))
-                            || $this->limitReached($startedAt);
+                    shouldStop: static function () use ($stopRequest): bool {
+                        return $stopRequest->isRequested();
                     },
                     onDrainStart: static function () use ($flowKey): void {
                         // Cancel the consumers and keep their channels: the handlers still
@@ -283,6 +284,9 @@ class QueueConsumer
                     },
                     preemptionQuantumMs: $this->preemptionQuantumMs,
                     handlerTimeoutMs: 0,
+                    limitReached: function () use ($startedAt): ?string {
+                        return $this->limitReached($startedAt);
+                    },
                 );
             } catch (TaskErrorException $exception) {
                 throw AmqpFailure::translate(
@@ -291,7 +295,7 @@ class QueueConsumer
                 );
             }
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
 
             $publishChannels->close();
 
@@ -655,14 +659,22 @@ class QueueConsumer
         );
     }
 
-    /** Whether a life limit says this worker has done its shift. */
-    protected function limitReached(float $startedAt): bool
+    /**
+     * The life limit that says this worker has done its shift, as the shutdown line names
+     * it, or null. A stop at one is a stop at a limit like maxMessages, so a master
+     * replaces the worker even under OnFailure.
+     */
+    protected function limitReached(float $startedAt): ?string
     {
         if ($this->maxRuntimeSeconds > 0 && (microtime(true) - $startedAt) >= $this->maxRuntimeSeconds) {
-            return true;
+            return sprintf('maxRuntimeSeconds=%d', $this->maxRuntimeSeconds);
         }
 
-        return $this->maxMemoryBytes > 0 && memory_get_usage() >= $this->maxMemoryBytes;
+        if ($this->maxMemoryBytes > 0 && memory_get_usage() >= $this->maxMemoryBytes) {
+            return sprintf('maxMemoryBytes=%d', $this->maxMemoryBytes);
+        }
+
+        return null;
     }
 
     /**

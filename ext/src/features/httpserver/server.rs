@@ -11,10 +11,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
+use crate::features::httpserver::listen::Listener;
 use crate::features::httpserver::payloads::RequestEvent;
 use crate::features::httpserver::requeststats::RequestStats;
 use crate::stats::Pusher;
@@ -163,12 +164,40 @@ pub struct ServerState {
     pub _pusher: Pusher,
 }
 
+/// How long a connection is given to send a request once the server stops accepting.
+/// Its client may be about to send one it has every right to an answer to — it just
+/// connected, or was queued on the socket, or its next request on a keep-alive
+/// connection is already on its way and only not read yet — and closing the connection
+/// under it would turn that client away. A client sends as soon as it can, so a second
+/// is plenty, and bounds what an idle connection can hold the stop up by.
+const STOP_GRACE: Duration = Duration::from_secs(1);
+
+/// What one connection needs from the server it belongs to, shared by all of them.
+#[derive(Clone)]
+struct ConnectionContext {
+    registries: &'static Registries,
+    flow_key: String,
+    requests: mpsc::Sender<RequestEvent>,
+    handler_timeout: Duration,
+    max_request_body: i64,
+    slots: Option<Arc<tokio::sync::Semaphore>>,
+    stats: Option<Arc<RequestStats>>,
+    stopping: CancellationToken,
+}
+
 /// Runs the accept loop until the flow is cancelled or accepting is stopped.
-/// Each accepted connection is served by its own task on the shared runtime.
+/// Each accepted connection is served by its own task on the shared runtime,
+/// tracked by `connections`, which is closed once the loop ends: its wait() then
+/// says when the last connection is gone.
+///
+/// Once accepting stops, the connections the kernel had queued on the socket and
+/// this server had not accepted yet are taken and served (Listener::take_queued),
+/// rather than reset with the socket. Then every connection is shut down gracefully
+/// (`serve_connection`).
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
-    listener: TcpListener,
+    mut listener: Listener,
     flow_key: String,
     requests: mpsc::Sender<RequestEvent>,
     handler_timeout_ms: i64,
@@ -177,28 +206,31 @@ pub async fn accept_loop(
     stats: Option<Arc<RequestStats>>,
     flow_ctx: CancellationToken,
     stop_accepting: CancellationToken,
+    connections: TaskTracker,
 ) {
-    // Caps requests in flight, which bounds buffered bodies as much as it bounds
-    // work: the permit is taken before the body is read.
-    let slots = if max_concurrency > 0 {
-        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
-            max_concurrency as usize,
-        )))
-    } else {
-        None
-    };
-    let handler_timeout = if handler_timeout_ms > 0 {
-        Duration::from_millis(handler_timeout_ms as u64)
-    } else {
-        DEFAULT_HANDLER_TIMEOUT
+    let context = ConnectionContext {
+        registries,
+        flow_key,
+        requests,
+        handler_timeout: if handler_timeout_ms > 0 {
+            Duration::from_millis(handler_timeout_ms as u64)
+        } else {
+            DEFAULT_HANDLER_TIMEOUT
+        },
+        max_request_body,
+        // Caps requests in flight, which bounds buffered bodies as much as it bounds
+        // work: the permit is taken before the body is read.
+        slots: (max_concurrency > 0).then(|| Arc::new(tokio::sync::Semaphore::new(max_concurrency as usize))),
+        stats,
+        stopping: stop_accepting.clone(),
     };
 
     loop {
         let accepted = tokio::select! {
             biased;
 
-            _ = flow_ctx.cancelled() => return,
-            _ = stop_accepting.cancelled() => return,
+            _ = flow_ctx.cancelled() => break,
+            _ = stop_accepting.cancelled() => break,
             accepted = listener.accept() => accepted,
         };
 
@@ -208,47 +240,81 @@ pub async fn accept_loop(
             continue;
         };
 
-        let _ = stream.set_nodelay(true);
-
-        let flow_key = flow_key.clone();
-        let requests = requests.clone();
-        let slots = slots.clone();
-        let stats = stats.clone();
-
-        tokio::spawn(async move {
-            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
-                let flow_key = flow_key.clone();
-                let requests = requests.clone();
-                let slots = slots.clone();
-                let stats = stats.clone();
-
-                async move {
-                    let _permit = match &slots {
-                        Some(slots) => slots.clone().acquire_owned().await.ok(),
-                        None => None,
-                    };
-
-                    Ok::<_, std::convert::Infallible>(
-                        serve_request(
-                            registries,
-                            request,
-                            flow_key,
-                            requests,
-                            remote_addr,
-                            handler_timeout,
-                            max_request_body,
-                            stats,
-                        )
-                        .await,
-                    )
-                }
-            });
-
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), service)
-                .await;
-        });
+        connections.spawn(serve_connection(context.clone(), stream, remote_addr));
     }
+
+    // A stop, not the flow going away: the clients waiting in the socket's queue are
+    // this server's to answer before it closes the socket.
+    if !flow_ctx.is_cancelled() {
+        for (stream, remote_addr) in listener.take_queued() {
+            connections.spawn(serve_connection(context.clone(), stream, remote_addr));
+        }
+    }
+
+    connections.close();
+}
+
+/// Serves one connection until it closes. Once the server stops accepting, every
+/// response goes out with `Connection: close` and the connection closes after it, so
+/// its client sends its next request to whoever still accepts. A connection still open
+/// STOP_GRACE after the stop is then shut down gracefully: one still serving a request
+/// finishes it and closes, an idle one closes at once.
+async fn serve_connection(context: ConnectionContext, stream: tokio::net::TcpStream, remote_addr: std::net::SocketAddr) {
+    let _ = stream.set_nodelay(true);
+
+    let stopping = context.stopping.clone();
+
+    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+        let context = context.clone();
+
+        async move {
+            let _permit = match &context.slots {
+                Some(slots) => slots.clone().acquire_owned().await.ok(),
+                None => None,
+            };
+
+            let mut response = serve_request(
+                context.registries,
+                request,
+                context.flow_key,
+                context.requests,
+                remote_addr,
+                context.handler_timeout,
+                context.max_request_body,
+                context.stats,
+            )
+            .await;
+
+            // hyper closes a connection after a response that says so.
+            if context.stopping.is_cancelled() {
+                response
+                    .headers_mut()
+                    .insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close"));
+            }
+
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    });
+
+    let connection = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service);
+
+    tokio::pin!(connection);
+
+    tokio::select! {
+        _ = connection.as_mut() => return,
+        _ = stopping.cancelled() => {}
+    }
+
+    // A request that comes now is answered with `Connection: close`, and the connection
+    // ends after it.
+    tokio::select! {
+        _ = connection.as_mut() => return,
+        _ = tokio::time::sleep(STOP_GRACE) => {}
+    }
+
+    connection.as_mut().graceful_shutdown();
+
+    let _ = connection.await;
 }
 
 /// A response body is either one buffer or a stream of chunks, so it is boxed.
@@ -332,7 +398,7 @@ async fn serve_request(
     if bench_ladder_l0() {
         let response = text_response(StatusCode::OK, "ok");
 
-        crate::logger::write(access_line(
+        crate::logger::access(access_line(
             started_at,
             started.elapsed(),
             request.method().as_str(),
@@ -443,7 +509,7 @@ async fn serve_request(
         }
     };
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         &log_method,
@@ -552,7 +618,7 @@ fn oversize_response(
 ) -> Response<ResponseBody> {
     let response = text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         method,

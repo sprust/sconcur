@@ -22,6 +22,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 - [Logs](#logs)
 - [Concurrency and limits](#concurrency-and-limits)
 - [Scaling across cores (SO_REUSEPORT)](#scaling-across-cores-so_reuseport)
+  - [A second process on the port](#a-second-process-on-the-port)
   - [A proxy in front of the pool](#a-proxy-in-front-of-the-pool)
 - [OPcache and JIT](#opcache-and-jit)
 - [Stopping after N requests](#stopping-after-n-requests)
@@ -32,8 +33,8 @@ extension; PHP stays a thin orchestration layer. Implementation:
 
 ## Model
 
-The network stack (accepting connections, HTTP parsing, keep-alive, timeouts,
-writing the response) runs inside the extension, on hyper. Each accepted
+The network stack (accepting connections, HTTP parsing, keep-alive, the handler
+timeout, writing the response) runs inside the extension, on hyper. Each accepted
 request becomes an ordinary result and reaches PHP through the same shared result
 channel as every other task, so the server reuses the existing `Scheduler` and
 introduces no second event loop.
@@ -43,8 +44,8 @@ coroutine, and ordinary async SConcur calls inside it run concurrently with the
 handling of other requests.
 
 The worker is a long-lived process: everything built before `serve()` — framework
-bootstrap, DI container, config, connections — is reused by every request. The
-flip side is the usual one: state survives between requests, so keep
+bootstrap, DI container, config, connections — is reused by every request.
+State survives between requests, so keep
 request-scoped state in the [coroutine context](coroutine-context.md) or local to
 the handler, and let `maxRequests` recycle the process.
 
@@ -56,9 +57,9 @@ flowchart TB
     Handler["spawn(coroutine) — your handler"]
 
     Client <-->|"request / response"| EXT
-    EXT -->|"request event"| Sched
+    EXT -->|"request event (waitAnyTimeoutBatch)"| Sched
     Sched -->|"spawn"| Handler
-    Handler -->|"returns ResponseInterface"| EXT
+    Handler -->|"execNoResult(RespondPayload::full) — HttpRespond"| EXT
 ```
 
 The handler contract is PSR-7: in `ServerRequestInterface`, out
@@ -102,9 +103,10 @@ Any PSR-7/PSR-17 implementation works (`nyholm/psr7`, `guzzlehttp/psr7`,
 php -d extension=./ext/build/sconcur.so server.php
 ```
 
-`serve()` blocks until `SIGTERM`/`SIGINT` or a flow stop. The handler runs in its
-own coroutine, so async features inside it (`Sleeper::usleep()`, MongoDB, SQL, the
-HTTP client) do not block other requests.
+`serve()` blocks until `SIGTERM`/`SIGINT` or until its flow (the group of tasks the
+server runs in) is stopped. The handler runs in its own coroutine, so async features
+inside it (`Sleeper::usleep()`, MongoDB, SQL, the HTTP client) do not block other
+requests.
 
 ## Server parameters
 
@@ -115,40 +117,30 @@ timeouts are in milliseconds.
 |---|---|---|
 | `serverRequestFactory` | — (required) | PSR-17 `ServerRequestFactoryInterface` — builds the handler's request. |
 | `responseFactory` | — (required) | PSR-17 `ResponseFactoryInterface` — builds the fallback `413`/`500` responses. |
-| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`. |
+| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`. Bound with `SO_REUSEPORT`, see [scaling across cores](#scaling-across-cores-so_reuseport). |
 | `readHeaderTimeoutMs` | `10000` | Accepted and not applied — see [Connection timeouts](#connection-timeouts). |
 | `readTimeoutMs` | `30000` | Accepted and not applied. |
 | `writeTimeoutMs` | `30000` | Accepted and not applied. |
 | `idleTimeoutMs` | `60000` | Accepted and not applied. |
-| `shutdownTimeoutMs` | `10000` | Accepted and not applied. |
+| `shutdownTimeoutMs` | `10000` | How long a stopping server waits for its connections to finish their last responses and close, see [graceful shutdown](#graceful-shutdown). `0` — as long as they take. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
-| `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
+| `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — the PHP handler is not unwound; the extension still answers `504` after 60 s. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
-| `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
-| `masterPid` | `null` | Stop gracefully once this pid is no longer the parent (the [master](worker-master.md) died); set from `--masterPid` by `fromArgs()`. |
-| `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |
-| `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. |
-| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
+| `masterPid` | `null` | Stop gracefully once this pid is no longer the parent. `null` — the master that forked this worker (`WorkerContext`, see the [worker master](worker-master.md#self-termination-of-orphaned-workers)), or no check outside one. |
+| `telemetrySocket` | `null` | Unix socket for stats snapshots ([stats](admin-stats.md)); `''` — off. `null` — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
+| `serverName` | `null` | Worker name in the stats snapshots. `null` — `SCONCUR_SERVER_NAME` from the environment, which the master sets as `<group>:<slot>`, or `sconcur-server`. |
+| `telemetryIntervalMs` | `null` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). `null` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or that default. |
 | `preemptionQuantumMs` | `0` | Automatic-preemption quantum while serving; `0` — off. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 
-`0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`.
-
-### Connection timeouts
-
-The four connection deadlines and `shutdownTimeoutMs` cross the boundary and are
-not acted on: the extension bounds a request by `handlerTimeoutMs` and nothing
-else. A slow client therefore holds its connection for as long as it likes, and
-a shutdown waits for the handlers already accepted to finish rather than for a
-clock — bounded in practice by `handlerTimeoutMs`, which is why leaving it at
-`0` on a public listener is what actually costs you. Terminate slow clients in
-the reverse proxy in front.
+### Building the server from argv
 
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
 unknown flag throws. PSR-17 factories cannot travel on argv, so they stay
-arguments. This is what a worker script under the [master](worker-master.md) uses:
+arguments. It is for a script that runs one server on its own — a
+[worker master](worker-master.md)'s role builds its server with the constructor:
 
 ```php
 $server = HttpServer::fromArgs(
@@ -158,6 +150,15 @@ $server = HttpServer::fromArgs(
 );
 ```
 
+### Connection timeouts
+
+The four connection deadlines cross the boundary and are not acted on: the extension
+bounds a request by `handlerTimeoutMs` and nothing else. A slow client therefore holds
+its connection for as long as it likes while the server runs. A stopping server waits
+for its connections up to `shutdownTimeoutMs` (see [graceful shutdown](#graceful-shutdown))
+and then leaves; a handler still running then is unwound. Terminate slow clients in the
+reverse proxy in front.
+
 ## Request and response (PSR-7)
 
 The handler receives a `ServerRequestInterface` assembled from the event by your
@@ -166,13 +167,13 @@ factory:
 | What you need | PSR-7 method |
 |---|---|
 | Method | `$request->getMethod()` |
-| Path | `$request->getUri()->getPath()` — without query |
+| Path | `$request->getUri()->getPath()` — percent-decoded by the extension (`%2F` arrives as `/`), without query |
 | Raw query string | `$request->getUri()->getQuery()` |
 | Parsed query | `$request->getQueryParams()` — filled via `parse_str()` |
 | All headers | `$request->getHeaders()` — `array<string, array<int, string>>` |
 | One header | `$request->getHeaderLine('X-Echo')` / `getHeader()` |
 | Protocol version | `$request->getProtocolVersion()` — `"1.1"`, without the `HTTP/` prefix |
-| Client address, etc. | `$request->getServerParams()` — `REMOTE_ADDR`, `REMOTE_PORT`, `SERVER_PROTOCOL`, `REQUEST_URI`, `QUERY_STRING`, `HTTP_HOST` |
+| Client address, etc. | `$request->getServerParams()` — `REMOTE_ADDR`, `REMOTE_PORT`, `REQUEST_METHOD`, `REQUEST_URI`, `QUERY_STRING`, `SERVER_PROTOCOL`, `HTTP_HOST` |
 | Body | `$request->getBody()` — `StreamInterface`, see below |
 
 Cookies, the parsed body and uploaded files (`getCookieParams()`,
@@ -200,8 +201,9 @@ interface:
 - `$request->materialize()` returns the plain request with everything applied,
   for the rare caller that has to hand a concrete object to something else.
 
-A handler that reads one header pays 0.36 us more than it used to. That is the
-trade: the deferral is worth it unless more than 91% of requests read a header.
+A handler that reads one header pays 0.36 us more than with headers applied up front.
+That is the trade: the deferral is worth it unless more than 91% of requests read a
+header.
 
 The body is `Dto/RequestBodyStream` over `Dto/RequestBody`. The extension reads
 the whole body before the handler runs and hands it over with the request, so
@@ -240,7 +242,8 @@ return $factory->createResponse(200)
 
 - A body of known size goes out in a single write; `getSize() === null` means a
   stream, see below.
-- Without `Content-Type` the extension does not guess one.
+- Without `Content-Type` a non-empty one-shot body goes out as
+  `text/plain; charset=utf-8`; a streamed response gets none.
 - 204/304 responses have their body discarded.
 - Returning a non-`ResponseInterface` is a contract error
   (`InvalidHandlerResponseException`): the client gets `500`, `onError` is called.
@@ -249,8 +252,8 @@ return $factory->createResponse(200)
 
 There is no separate stream DTO — PSR-7 covers it: return a response whose body is
 a lazy `StreamInterface` of unknown size (`getSize()` → `null`). The framework then
-reads it chunk by chunk (`read()`), sending each to the client and waiting for the
-flush (chunked transfer, SSE). The reading happens in the request coroutine, so
+reads it chunk by chunk (`read()`, 64 KiB at a time), sending each to the client and
+waiting until the connection has taken it (chunked transfer, SSE). The reading happens in the request coroutine, so
 your `read()` can suspend on async features and lazily produce the next chunk.
 
 ```php
@@ -258,7 +261,7 @@ use SConcur\Tests\Impl\HttpServer\GeneratorStream; // StreamInterface over a Gen
 
 $chunks = (static function (): Generator {
     foreach (range(1, 5) as $i) {
-        yield "data: event $i\n\n"; // one yield — one chunk flushed to the client
+        yield "data: event $i\n\n"; // one yield — one chunk sent to the client
         Sleeper::sleep(seconds: 1); // async work between chunks
     }
 })();
@@ -268,8 +271,8 @@ return $factory->createResponse(200)
     ->withBody(new GeneratorStream($chunks));
 ```
 
-- The client sets the pace: each chunk is acknowledged only after the extension has written
-  and flushed it, so a fast producer cannot outrun a slow client.
+- The client sets the pace: each chunk is acknowledged only after the connection has
+  taken it, so a fast producer cannot outrun a slow client.
 - No `Content-Length` — a header without length, then chunked transfer encoding.
 - The status cannot change after the first chunk (headers are on the wire), so an
   exception while reading the body is not turned into a `500` — it is only
@@ -277,10 +280,11 @@ return $factory->createResponse(200)
 
 ## Files
 
-An upload is written to disk in pieces from the body already in memory; a file
-response is built from `createStreamFromFile()`, where the size is known, so the
-response goes out in a single write and an explicit `Content-Length` avoids
-needless chunked encoding.
+An upload is written to disk in pieces from the body already in memory. A file
+response built from `createStreamFromFile()` has a known size, so the whole file is
+read into memory and sent in one write, with `Content-Length` set automatically. For
+a file too large to hold in memory, return a stream of unknown size (see
+[streaming](#response-streaming-chunked--sse)).
 
 ```php
 // Upload: write the request body into a file.
@@ -299,7 +303,6 @@ $stream = $factory->createStreamFromFile($path, 'rb');
 return $factory->createResponse(200)
     ->withHeader('Content-Type', 'image/png')      // image/* → the browser shows it inline
     ->withHeader('Content-Disposition', 'inline')  // attachment; filename="..." — to download
-    ->withHeader('Content-Length', (string) $stream->getSize())
     ->withBody($stream);
 ```
 
@@ -324,39 +327,43 @@ An `onError` that itself throws is safely swallowed — the client still gets `5
 
 ## Logs
 
-Access log — one line per request to `STDOUT`, always on, including requests the
-PHP handler never sees (`503` on shutdown, `504` on timeout, `413` on body
-overflow, a dropped connection):
+Access log — one line per request to `STDOUT` (under a worker master, wherever its
+[`accessLog`](worker-master.md#access-lines) says), including the answers the
+extension gives on its own (`504` on handler timeout, `413` on body overflow, `503` to a
+request that reaches a server whose stop has run past `shutdownTimeoutMs`). A request whose client disconnects before the answer leaves no line:
 
 ```
 2026-06-14T17:36:26.123456 GET / 200 2.59ms
 2026-06-14T17:36:26.456789 GET /msleep/30 200 34.77ms
 ```
 
-The time is the moment the request was accepted; the last field is the total
-handling time (for a stream — its whole duration). The line is formatted by the
-same runtime task that writes the response, so the log costs no crossing
-per request (that crossing is the most expensive part of a tiny request — moving
-moving the log out of PHP nearly doubles the throughput of one core on
-hello-world). Output
-is asynchronous: a background runtime task writes from a buffer with a ~100 ms
-timer flush; on overflow the extra lines are discarded and counted. The method
-and path are escaped (control bytes, including `CR`/`LF` from a URL-encoded
+The time is the moment the request was accepted; the last field is the time until the
+response was handed to the connection — for a stream, until its head, not its whole
+duration. The line is formatted by the same runtime task that writes the response, so
+the log costs no crossing per request (that crossing is the most expensive part of a
+tiny request — moving the log out of PHP nearly doubles the throughput of one core on
+hello-world). Output is asynchronous: a background thread writes from a buffer,
+flushed every ~100 ms; on overflow the extra lines are discarded and counted. The
+method and path are escaped (control bytes, including `CR`/`LF` from a URL-encoded
 path, become `\xNN`), so a request cannot forge a second log line.
 
 Lifecycle lines are written by the PHP side and flushed immediately — one at
 startup, one per shutdown step:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=X.Y.Z maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=X.Y.Z maxConcurrency=0 maxRequests=0
 2026-06-28T12:00:01.000000 sconcur http server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur http server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur http server shutdown: stopped
 ```
 
+A stop that takes longer reports every 5 s what it is still waiting for.
 `reason=signal` — `SIGTERM`/`SIGINT` or a lost master; `reason=limit` —
-`maxRequests` reached. Under a [worker master](worker-master.md) the worker's
-`STDOUT` is captured and rewritten into the shared log.
+`maxRequests` reached, logged as `reason=limit, limit=N` with the number the worker
+stopped at. Under a [worker master](worker-master.md) the worker's
+`STDOUT` is captured and rewritten into the shared log; the access lines can go to a
+file of the day each worker writes itself instead — see
+[access lines](worker-master.md#access-lines).
 
 ## Concurrency and limits
 
@@ -429,11 +436,10 @@ flowchart TB
     Port --> P4
 ```
 
-Pass `reusePort: true` to every process on the shared port (inside the extension
-it sets `SO_REUSEPORT` on the socket before the bind,
-`ext/src/features/httpserver/listen.rs`). Run them as separate processes — a
-supervisor (systemd, supervisord, docker `--scale`), the
-[worker master](worker-master.md), or a plain loop.
+Every server binds its address with `SO_REUSEPORT` (set on the socket before the bind,
+`ext/src/features/httpserver/listen.rs`), so several processes on one port need no
+setting. Run them as separate processes — the [worker master](worker-master.md), a
+supervisor (systemd, supervisord, docker `--scale`), or a plain loop.
 
 ```bash
 # one process per core
@@ -448,16 +454,40 @@ Caveats:
 - Processes are independent: no shared memory, each has its own runtime,
   scheduler and coroutines. Shared state (sessions, cache, counters) goes to
   external storage.
-- Every process must set `reusePort: true` — if one did not and started first, the
-  rest get `EADDRINUSE`.
 - Balancing is by connections, not requests (4-tuple hash), so with keep-alive all
   requests of one connection land in the same process. Few long-lived connections
   distribute unevenly.
 - Limits are per process: the total is value × number of processes.
-- Graceful shutdown is per process and loses no traffic — see below.
+- Graceful shutdown is per process — see below.
 - `SO_REUSEPORT` lets another process with the same UID bind the port and
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
+
+### A second process on the port
+
+`SO_REUSEPORT` on every socket has a price: a process started on a port that is
+already taken does not fail with `EADDRINUSE`, it joins, and the kernel spreads the
+connections over both. A server left running from an earlier deploy, or a second
+master, serves part of the traffic with its own code. For a second
+[worker master](worker-master.md) on the same port:
+
+- with the same `name` and `runtimeDir` it does not start: its lock is held, and it
+  fails with `MasterAlreadyRunningException` before it forks a worker;
+- with another `name` or `runtimeDir` it starts, and so do its workers: both pools
+  serve the port. Two masters of two workers each on one port took 40 requests as
+  15, 9, 7 and 9 — every one of the four workers had a share;
+- under another user its workers fail with `EADDRINUSE`: the kernel lets only
+  sockets of one effective UID share a port.
+
+So give an application one fixed `name` and `runtimeDir`, the same in every deploy —
+then a master started by mistake beside a running one stops at the lock — and make
+sure a standalone server is gone before the next one starts, by its pid or, for a
+master, by `MasterControl::isRunning()`.
+
+There is no option to bind without it, and no way to hand a server a socket bound
+elsewhere: a pool of processes on one shared socket all wake for every connection,
+and the first to run takes what is queued — across 12 workers the busiest served
+7–9 times as many requests as the idlest.
 
 ### A proxy in front of the pool
 
@@ -466,7 +496,8 @@ out: across 8 workers the request-count spread was 1.13–1.33× at 256
 connections. With a few long-lived keep-alive connections it does not: at 32
 connections the busiest worker served 2.8–5.1× the requests of the idlest,
 because some workers held one connection and others six. The per-worker tails
-stayed alike in both cases.
+stayed alike in both cases. One shared socket does not change that: at 32
+connections across 12 workers it left 2.9–6.7× between them as well.
 
 A proxy hands out requests rather than connections, which is what a pool fed by
 a handful of keep-alive clients needs. With many connections it does not pay.
@@ -482,8 +513,8 @@ connections:
 
 If a proxy goes in front anyway, two conditions. Do not take the default
 round-robin: it hands out blindly and is the worst of the three; take a
-load-aware strategy. And the workers run with `reusePort: false` on separate
-ports, listed in the upstream:
+load-aware strategy. And the workers listen on separate ports, listed in the
+upstream:
 
 ```nginx
 upstream workers {
@@ -513,7 +544,7 @@ there is capacity, not request placement.
 
 A CLI process runs without OPcache by default (`opcache.enable_cli=0`), so a
 worker interprets every opcode on every request. Enabling OPcache with the
-tracing JIT is a free win for a long-lived worker:
+tracing JIT is worth it for a long-lived worker:
 
 ```ini
 opcache.enable_cli=1
@@ -545,28 +576,48 @@ $server = new HttpServer(
 
 The limit is per process (the total budget until restart is `maxRequests` × the
 number of workers). Dispatched requests are counted — the limit request itself
-is not aborted, and requests rejected while the server is stopping do not count.
+is not aborted, and a request that arrives on an open connection while the server
+stops is still answered, past the limit.
+Under the worker master each worker stops somewhere between `maxRequests` and half
+again as many, so the pool does not restart all at once, and its replacement is started
+before it finishes — see [restart policy and
+`maxRequests`](worker-master.md#restart-policy-and-maxrequests).
 
 ## Graceful shutdown
 
-On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
-closes the listening socket immediately — the accept loop stops, the connections
-already accepted are not cancelled — waits for the running handlers, and exits. Each step is logged, see [Logs](#logs).
+On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server stops
+accepting and closes its listening socket, so with `SO_REUSEPORT` the kernel sends new
+connections to its neighbours. Then:
 
-Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
-leaves the reuseport group, so the kernel routes new connections to its
-neighbours and a rolling restart loses no requests. A request accepted but not
-yet answered in the narrow window between the signal and the socket close gets
-`503 Service Unavailable` rather than a dropped connection.
+1. The connections the kernel had already queued on the socket, and the server had not
+   accepted yet, are taken and served rather than reset with the socket.
+2. Every response from now on goes out with `Connection: close`, and the connection
+   closes after it: the client sends its next request to a neighbour. A request already
+   on its way on a keep-alive connection is answered, not dropped.
+3. A connection still open a second after the stop is shut down: an idle one — a
+   keep-alive one between requests, or a client that connected and never sent a
+   request — closes at once, one in the middle of a request after its response.
+4. The server leaves once every connection has finished its last response and closed —
+   including the requests that arrived meanwhile — or once `shutdownTimeoutMs` has
+   passed since it stopped accepting; a handler still running then is unwound.
+
+Each step is logged, see [Logs](#logs). A connection that arrives between the last
+accept from the queue and the close of the socket is still reset; Linux 5.14+ hands
+those to a sibling `SO_REUSEPORT` socket when `net.ipv4.tcp_migrate_req` is `1` — an
+administrator's setting, off by default.
+
+Measured with a pool of 12 workers under a [master](worker-master.md) on the empty
+endpoint, each worker leaving at its `maxRequests` and replaced, single 10 s runs of
+`wrk`: with 256 keep-alive connections (`maxRequests` 50 000), 48 restarts cost 3 failed
+requests, against 708 when idle connections were closed at once; with a connection per
+request (`maxRequests` 10 000), about 60 restarts cost 6–7, against 23–29 when the queue
+was left to be reset.
 
 - Signal handlers are installed before the listener starts and restored on exit.
-- `ext-pcntl` is required; without it the process is killed hard. The project's
-  Docker images enable it.
+- The signals are taken through the extension: neither `ext-pcntl` nor
+  `ext-posix` is needed.
 - On an idle server shutdown fires within ~250 ms — the `serve()` loop polls
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
-- The final response write is fire-and-forget: a handler finishes once its
-  response is handed to the connection's write loop, and the shutdown then waits
-  for the active connections to finish writing, with no deadline of its own.
 
 ## Internals
 
@@ -578,14 +629,14 @@ sequenceDiagram
 
     PHP->>EXT: push(ServePayload, HttpServe)
     Note over EXT: handle_serve — bind the listener + serve it with hyper
-    Note over EXT: the server state is the request handler (self-pumping request stream)
+    Note over EXT: handle_serve's own body pumps the request stream
     Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
     Client->>EXT: HTTP request
-    Note over EXT: serve — acquire slot, read body, request event into the requests channel
+    Note over EXT: accept_loop / serve_request — acquire slot, read body, request event into the requests channel
     EXT-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
     Note over PHP: spawn(coroutine) — handle($handler)
     PHP->>EXT: execNoResult(RespondPayload::full, HttpRespond)
-    Note over EXT: handle_respond — dispatch the write command, the connection writes status+headers+body
+    Note over EXT: respond_detached — hand the write command to the connection, which writes status+headers+body
     EXT->>Client: response
     Note over PHP: coroutine finished right after the push, the flow is cleaned up
 ```
@@ -604,8 +655,9 @@ holds the registries `pending_requests` (`requestId →` the channel the
 connection reads the handler's writes from) and `server_states` (`flowKey →`
 server state, for `StopAccepting`). It is also the accept loop and the
 per-request service over `hyper`, handling the concurrency semaphore, the
-handler timeout, 503/504 and the graceful stop. `listen.rs` is the TCP listener
-and `SO_REUSEPORT`.
+handler timeout, 503/504 and the graceful stop of the connections. `listen.rs` is the
+TCP listener with `SO_REUSEPORT`, and taking what is
+queued on the socket when the server stops.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
@@ -622,15 +674,16 @@ commands are acknowledged only after they are applied — that is what keeps a
 handler from outrunning the client. The one-shot `full` write is
 fire-and-forget: the coroutine ends right after handing it over (a failure of
 the final write is not observable to the handler), and the handover itself is
-bounded by the connection-side guards (`abandoned`, handler timeout). On the
+bounded by the connection-side guards (`abandoned`, handler timeout). A stopping
+server still waits for the write: it leaves once its connections have closed. On the
 streaming path, if the connection dropped or the timeout fired, the handler gets
 an `abandoned` error and unwinds cleanly instead of hanging.
 
 ## What's missing compared to typical servers
 
-The general limits of the library (FPM, `pcntl_fork`, NTS only) are in the
-[README](../README.md#use-and-limitations); the table holds what is specific to
-the server.
+The general limits of the library (FPM, `fork`, NTS only, `exit()` with active
+tasks) are in the [README](../README.md#use-and-limitations); the table holds what
+is specific to the server.
 
 | What | Status | Comment |
 |---|---|---|
@@ -641,26 +694,20 @@ the server.
 | CPU-bound handlers | ⚠️ limited | Neighbours' latency is bounded by [preemption](coroutine-switching.md); throughput comes from the per-core pool. |
 | Synchronous I/O in a handler | ⚠️ dangerous | Native `sleep`/PDO/`curl`/files freeze the loop. |
 | Router / middleware | ❌ no | A low-level PSR-7 contract; layer a PSR-15 stack on top yourself. |
-| `exit()`/`die()` with active tasks | ❌ no | Finish or stop the tasks first. |
 | Streaming the request body | ❌ no | The extension reads the whole body, up to `maxRequestBody`, before the handler runs. |
 
-What does work: keep-alive, the timeout pipeline, chunked/SSE streaming, multiple
+What does work: keep-alive, the handler timeout, chunked/SSE streaming, multiple
 values of one header, binary bodies, the concurrency limit, `413`/`503`/`504`,
 graceful shutdown.
 
 ## Running in Docker and testing
 
 `docker-compose.yml` has a `servers` service: under supervisor it brings up one master
-via `bin/sconcur-server`, holding the HTTP, socket and WebSocket pools and the RabbitMQ
-consumers as a group each. Ports are hard-coded in compose (HTTP — `28080:8080`), since
-the master's JSON config cannot use environment variables. `make servers-restart`
-rebuilds the extension and recreates the container.
-
-`make servers-{status,stop,reload}` takes the whole master;
-`make http-server-{status,reload}` (and `socket-server-*`, `ws-server-*`,
-`rabbitmq-*`) narrows the command to one group with `--group`. There is no per-group
-`stop`: one master means one lock and one state file, and stopping half of it is not a
-thing.
+(`tests/servers/worker/master.php`, built from `config/sconcur.servers.config.json`),
+holding the HTTP, socket and WebSocket pools and the RabbitMQ consumers as a group each.
+Ports are hard-coded in compose (HTTP — `28080:8080`). `make servers-restart` rebuilds
+the extension and recreates the container; `make servers-status` and
+`make servers-stop` reach the master through `MasterControl`.
 
 The tests do not depend on that service: they start the server as a separate
 process via `SConcur\Tests\Impl\HttpServer\TestHttpServer`, whose launch options

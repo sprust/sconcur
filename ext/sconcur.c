@@ -1,17 +1,23 @@
 #include <php.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <SAPI.h>
+#include <php_output.h>
+#include <ext/random/php_random.h>
 #include <zend_atomic.h>
 #include <zend_closures.h>
 #include <zend_enum.h>
 #include <zend_exceptions.h>
 #include <zend_fibers.h>
+#include <zend_objects_API.h>
 #include "sconcur_core.h"
 
 /*
  * Preemption plumbing: what turns a CPU-bound handler into one that yields.
  *
- * A ticker task in the core's runtime periodically requests a VM interrupt; on
- * the next opcode boundary the engine calls sconcur_interrupt_function on the
+ * A ticker thread the core starts (a plain OS thread, not a runtime task, so it
+ * keeps ticking while the runtime is idle) periodically requests a VM interrupt;
+ * on the next opcode boundary the engine calls sconcur_interrupt_function on the
  * PHP thread, which invokes the PHP callback registered by armPreemption() (the
  * Scheduler's preempt hook that parks the current coroutine). The original
  * interrupt handler is always chained so pcntl signal dispatch keeps working,
@@ -754,6 +760,51 @@ static void sconcur_finish_wait(zval *return_value, int status, const char *what
 }
 
 /*
+ * Process control: the two steps of a worker's life the process export leaves to
+ * this side, because they are PHP's own state.
+ */
+
+/*
+ * Runs in a freshly forked child, before it is handed back to PHP.
+ *
+ * Output still buffered by the parent is the parent's to write, and the parent
+ * will: written by the child as well, it would come out twice.
+ *
+ * Both random generators are marked unseeded, so each draws a seed of its own on
+ * its next use; otherwise every child of one parent continues the parent's
+ * sequence, and mt_rand() answers the same in all of them.
+ *
+ * The objects that exist now are the parent's, and a destructor of one run in
+ * every worker would undo the parent's work once per worker (a temporary file
+ * removed, a connection closed). They are marked as already destroyed. A
+ * worker whose script ends leaves through _exit and runs no destructor anyway;
+ * the mark is for the exits where PHP's shutdown does run: exit() in the script
+ * and a fatal error. Objects the child creates afterwards are destroyed as
+ * usual, the extension's own handle among them: the worker makes it anew
+ * (ForkedWorker), so exit() tears down what it runs.
+ */
+void sconcur_after_fork_in_child(void)
+{
+    php_output_discard_all();
+
+    RANDOM_G(mt19937_seeded) = false;
+    RANDOM_G(combined_lcg_seeded) = false;
+
+    zend_objects_store_mark_destructed(&EG(objects_store));
+}
+
+/*
+ * Writes out everything a worker printed, right before it leaves through _exit:
+ * the output buffers PHP still holds, the SAPI's, and C stdio's.
+ */
+void sconcur_flush_output(void)
+{
+    php_output_end_all();
+    sapi_flush();
+    fflush(NULL);
+}
+
+/*
  * arginfo:
  *  - ping(string name)
  *  - push(string flowKey, string method, string taskKey, array payload, int ownerId)
@@ -772,6 +823,7 @@ static void sconcur_finish_wait(zval *return_value, int status, const char *what
  *  - amqpReopenConsumer(string flowKey, string channelId)
  *  - destroy()
  *  - version()
+ *  - process(string command, array payload): mixed
  */
 
 // ping(string name)
@@ -861,6 +913,12 @@ ZEND_END_ARG_INFO()
 
 // version()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_version, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// process(string command, array payload)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_process, 0, 0, 2)
+    ZEND_ARG_TYPE_INFO(0, command, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, payload, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
 // armPreemption(int quantumMs, callable callback)
@@ -1144,6 +1202,21 @@ PHP_FUNCTION(version)
     free(response);
 }
 
+// PHP: SConcur\Extension\process(string $command, array $payload): mixed
+// One process-control command, for the worker master; see src/process/.
+PHP_FUNCTION(process)
+{
+    char *command = NULL;
+    size_t command_len;
+    zval *payload = NULL;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "sa", &command, &command_len, &payload) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    sconcur_finish_wait(return_value, process(command, (int)command_len, payload, return_value), "process");
+}
+
 // PHP: SConcur\Extension\armPreemption(int $quantumMs, callable $callback): void
 // Registers the preempt callback and starts the core's interrupt timer. Re-arming
 // replaces the previous timer and callback.
@@ -1211,6 +1284,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", amqpReopenConsumer, arginfo_sconcur_amqpReopenConsumer)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)
+    ZEND_NS_FE("SConcur\\Extension", process, arginfo_sconcur_process)
     ZEND_NS_FE("SConcur\\Extension", armPreemption, arginfo_sconcur_armPreemption)
     ZEND_NS_FE("SConcur\\Extension", disarmPreemption, arginfo_sconcur_disarmPreemption)
     PHP_FE_END

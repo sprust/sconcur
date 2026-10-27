@@ -9,8 +9,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionProperty;
 use RuntimeException;
 use SConcur\Tests\Impl\Worker\ReportingWorkerGroup;
-use SConcur\Worker\MasterCli;
-use SConcur\Worker\MasterConfig;
+use SConcur\Worker\WorkerGroupConfig;
 use SConcur\Worker\MasterLogger;
 use SConcur\Worker\WatchdogEvent;
 use SConcur\Worker\WatchdogEventEnum;
@@ -76,16 +75,31 @@ class WatchdogEventTest extends TestCase
         self::assertSame(30_000, $event->watchdogTimeoutMs);
     }
 
+    /**
+     * Caught by the master's reporter, which every event passes through on its way to the
+     * application's handler; a group hands the event on as it is.
+     */
     public function testAHandlerThatThrowsIsLoggedAndDoesNotEscape(): void
     {
         $logger = $this->logger();
 
+        $handler = static function (): void {
+            throw new RuntimeException('the alerting backend is down');
+        };
+
+        $master = new class(runtimeDir: $this->directory, groups: [static::group()], onWatchdogEvent: $handler) extends WorkerMaster {
+            public function reporterLoggingTo(MasterLogger $logger): Closure
+            {
+                $this->logger = $logger;
+
+                return $this->watchdogReporter();
+            }
+        };
+
         $group = ReportingWorkerGroup::make(
             logger: $logger,
             watchdogTimeoutMs: 30_000,
-            onWatchdogEvent: static function (): void {
-                throw new RuntimeException('the alerting backend is down');
-            },
+            onWatchdogEvent: $master->reporterLoggingTo($logger),
         );
 
         // No exception: an application's alerting must not be able to stop the supervisor.
@@ -118,30 +132,27 @@ class WatchdogEventTest extends TestCase
         $this->expectNotToPerformAssertions();
     }
 
-    public function testTheHandlerReachesTheMasterThroughTheConfigAndTheCli(): void
+    public function testTheHandlerReachesTheMaster(): void
     {
         $handler = static function (WatchdogEvent $event): void {
         };
 
-        $config = MasterConfig::fromArray([
-            'runtimeDir' => sys_get_temp_dir(),
-            'groups'     => [
-                ['name' => 'http', 'workerScript' => __FILE__],
-            ],
-        ]);
+        $master = new WorkerMaster(
+            runtimeDir: sys_get_temp_dir(),
+            groups: [static::group()],
+            onWatchdogEvent: $handler,
+        );
 
-        self::assertSame($handler, $this->handlerOf($config->toWorkerMaster($handler)));
+        self::assertSame($handler, $this->handlerOf($master));
+    }
 
-        // And the same handler given to the CLI, which is how an application that starts
-        // the master through `sconcur-server`'s entry point passes one.
-        $cli = new class(null, null, $handler) extends MasterCli {
-            public function startFor(MasterConfig $config): WorkerMaster
-            {
-                return $config->toWorkerMaster($this->onWatchdogEvent);
-            }
-        };
-
-        self::assertSame($handler, $this->handlerOf($cli->startFor($config)));
+    protected static function group(): WorkerGroupConfig
+    {
+        return new WorkerGroupConfig(
+            name: 'http',
+            role: static function (): void {
+            },
+        );
     }
 
     protected function handlerOf(WorkerMaster $master): ?Closure

@@ -2,15 +2,12 @@ English | [Русский](mongodb.ru.md)
 
 # MongoDB
 
-Asynchronous MongoDB on top of the official Rust driver. Each operation goes into the
-extension and runs in a runtime task while the coroutine is suspended; inside a
-`WaitGroup` operations run in parallel and the total time is bounded by the slowest
-one. Outside a `WaitGroup` the same API works synchronously.
-
-Documents cross to the extension as the PHP arrays they are, and come back as
-arrays the extension builds. BSON values that a PHP array cannot express arrive as
-`SConcur\Bson\*` objects (`ObjectId`, `UTCDateTime`, `Decimal128`, …); documents
-and arrays arrive as plain PHP arrays.
+Asynchronous MongoDB on top of the official Rust driver — one of the extension's
+features (a module with a PHP API in `src/Features/Mongodb/` and a handler in the
+Rust core). Each operation goes into the extension and runs in a runtime task while
+the coroutine (a PHP fiber the scheduler suspends while the extension works) waits;
+inside a `WaitGroup` operations run in parallel and the total time is bounded by the
+slowest one. Outside a `WaitGroup` the same API works synchronously.
 
 > `SConcur\Bson\*` reproduces the `MongoDB\BSON\*` API one for one — the same
 > constructors, getters, string and JSON forms — so moving an application from the
@@ -50,8 +47,8 @@ $collection = $database->selectCollection('users');
 | `Client` parameter | Default | Purpose |
 |---|---|---|
 | `uri` | — | MongoDB connection string |
-| `timeoutMs` | 30000 | operation deadline, enforced by the extension around each call; exceeding it fails the call with `operation timed out`. A cursor's later batches are pulled by calls of their own and are not under this deadline |
-| `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (the driver's `server_selection_timeout`), so an unreachable MongoDB fails fast instead of hanging on the driver default of 30 s |
+| `timeoutMs` | 30000 | deadline for each call, enforced by the extension; exceeding it fails the call with `operation timed out`. `0` also means 30000. A cursor's later batches are pulled by calls of their own and are not under this deadline |
+| `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (the driver's `server_selection_timeout`), so an unreachable MongoDB fails fast instead of waiting out the driver default of 30 s. `0` also means 10000 |
 
 Clients are reused inside the extension by the key
 `uri + serverSelectionTimeoutMs`, so creating a `Client` per request is
@@ -95,7 +92,7 @@ $document['tags'];      // ['a', 'b']
 
 An empty document reads back as an empty array — PHP has one type for `{}` and
 `[]`, so the two are told apart only by what is inside them. Writing that array
-back stores an empty array, exactly as the `ext-mongodb` path did.
+back stores an empty BSON array, not an empty document.
 
 A plain object is accepted where a document is expected — `(object) [...]`, or what
 `json_decode()` returns without `associative: true` — and stores as a sub-document.
@@ -108,6 +105,10 @@ Each class carries the same methods as its `MongoDB\BSON\*` counterpart —
 `jsonSerialize()` everywhere the driver has them. `int64` is wrapped for the same
 reason the driver wraps it: without the wrapper the type would not survive a read
 followed by a write, because a value that fits in an int32 would come back as one.
+
+A PHP `int` is stored as int32 when it fits and as int64 otherwise; pass an `Int64`
+to store int64 regardless. A PHP string that is not valid UTF-8 is stored as generic
+binary and reads back as `Binary`.
 
 ## Collection operations
 
@@ -233,8 +234,8 @@ and `selectDatabase()`.
 ## Cursors and streaming
 
 `find()` and `aggregate()` return an `Iterator` that lazily pulls the next batches
-from the extension (by `batchSize`), so a large result set is not buffered whole either in the
-extension or in PHP:
+from the extension (by `batchSize`), so a large result set is not buffered whole
+either in the extension or in PHP:
 
 ```php
 foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
@@ -245,9 +246,9 @@ foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
 ```
 
 An early `break`, an exception, or a `WaitGroup` stop closes the cursor on the
-extension side (the cursor is dropped, and the driver sends `killCursors`). Each
-cursor in concurrent flows (a flow is the group of tasks a `WaitGroup` owns
-inside the extension) is independent.
+extension side when its flow ends (a flow is the group of tasks a `WaitGroup` owns
+inside the extension): the cursor is dropped, and the driver sends `killCursors`.
+Cursors in concurrent flows are independent of each other.
 
 ## Concurrency
 
@@ -277,8 +278,6 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Internals
 
-- All operations are run by the Rust `mongodb` driver in a runtime task; the
-  driver is async, so the concurrency is the runtime's.
 - Client registry (`ext/src/features/mongodb/clients.rs`) — one `mongodb::Client`
   per key `uri + serverSelectionTimeoutMs`, shared by every task that names it.
   The driver's own `Client` is already a pooled handle, so this layer only keeps
@@ -296,8 +295,6 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Limits
 
-- A `find`/`aggregate` cursor should be read to the end or interrupted (`break`) —
-  it holds a resource on the server until closed.
 - Of the BSON types the specification deprecates, `symbol` is read as a string and
   `undefined` as `null`; `dbPointer` is read as `null`, its contents
   dropped. They only occur in data written by very old drivers.
@@ -305,27 +302,18 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Object conversion
 
-BSON values a PHP array cannot express — an id, a date, a decimal — cross the
-boundary as PHP objects, and nothing serializes them; the mechanism itself is in
-[Values across the boundary](value-conversion.md). On the way in the extension
-reads an instance's class name and public properties off the object it was given
-(`ext/src/features/mongodb/serializer/from_value.rs`, one arm per class); on the way
-out it creates the instance itself, without calling the constructor, and writes the
-declared properties in place (`serializer/to_value.rs`). The constructor therefore
-guards user code only, and what arrives from the extension is validated on its side.
+Values a PHP array cannot express cross as `SConcur\Bson\*` objects; the mechanism
+and its constraints (public properties, `readonly`, no constructor call on the way
+out, a short class name) are in
+[Values across the boundary](value-conversion.md#value-classes). MongoDB's two arms
+are `bson_from_object` in `ext/src/features/mongodb/serializer/from_value.rs`, which
+reads properties with the `property_*` helpers that fail on a missing or mistyped
+property, and `bson_value` in `serializer/to_value.rs`.
 
-Two constraints follow for a class in `src/Bson/`: its properties are public, because
-the extension reads and writes them by name, and the class is `readonly`, so the
-value object stays immutable anyway. Keep the class name short: it travels with
-every value.
-
-Adding a type is three places: the PHP class in `src/Bson/`, mirroring its
-`MongoDB\BSON\*` counterpart exactly (same constructor, getters, `__toString()` and
-`jsonSerialize()`); an arm in `from_value.rs` reading the properties with the
-`property_*` helpers, which fail on a missing or mistyped property rather than
-substitute a zero; and an arm in `to_value.rs` building `Value::object(class,
-properties)` in declaration order. The tests to extend are the serializer's own unit
-tests on both arms, `tests/feature/Features/Mongodb/Bson/BsonDriverParityTest.php`
-(the value object against its `MongoDB\BSON\*` counterpart) and
+A new type is a class in `src/Bson/` mirroring its `MongoDB\BSON\*` counterpart
+exactly (constructor, getters, `__toString()`, `jsonSerialize()`) plus an arm in
+each; extend the serializer's unit tests on both arms,
+`tests/feature/Features/Mongodb/Bson/BsonDriverParityTest.php` (against the
+`MongoDB\BSON\*` counterpart) and
 `tests/feature/Features/Mongodb/Serialization/MongodbDocumentSerializerTest.php`
 (a round trip through a live MongoDB).

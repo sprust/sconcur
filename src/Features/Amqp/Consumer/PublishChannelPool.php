@@ -348,7 +348,7 @@ class PublishChannelPool
         // closes the gap behind it, so a name taken from the place would be one already in
         // use — and the extension side pools a socket by its options, the name among them, so two
         // of these objects would share one socket while the pool budgeted channels to each
-        // of them separately, straight into a 504.
+        // of them separately, straight into a refused channel open.
         ++$this->connectionsOpened;
 
         $connection = new Connection(

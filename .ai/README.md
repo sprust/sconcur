@@ -31,8 +31,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - [README.md](../README.md) — overview and usage
 - [docs/architecture.md](../docs/architecture.md) — Fiber ↔ runtime task, the
   scheduler, the layers, the task lifecycle
-- [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`,
-  `sconcur-server`
+- [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`
 - [docs/coroutine-context.md](../docs/coroutine-context.md),
   [docs/coroutine-switching.md](../docs/coroutine-switching.md),
   [docs/coroutine-timeout.md](../docs/coroutine-timeout.md) — per-coroutine context;
@@ -52,34 +51,36 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [adding-a-server](../docs/adding-a-server.md),
   [value-conversion](../docs/value-conversion.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
-  [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
-- History: [the move to Rust](../docs/rust-core.md) — the gate the port had to
+  [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md),
+  [bench-catalog](../docs/bench-catalog.md) — every bench, soak and profiler as a file
+  tree with its command and purpose
+- History: [the move to Rust](../docs/rust-core.md) — the threshold the port had to
   pass and what it measured, kept as a record rather than a live comparison
 - [.ai/plans/](plans/) — detailed designs for roadmap items
+- [.ai/soak-analysis.md](soak-analysis.md) — running and reading the memory and failure
+  soaks: which memory to read, descriptors and zombies, losses per death, taking apart a
+  difference between two launches, proving a test catches the bug
 
 ## Plans
 
 The README keeps only a short, one-line-per-item roadmap. Detailed designs live in
-`.ai/plans/` — one Markdown file per plan. When a roadmap item grows beyond a
-sentence (mechanics, API sketch, trade-offs, open questions), put the detail in a
+`.ai/plans/` — one Markdown file per plan, or a directory of them for a large one
+(`fork-master/`). When a roadmap item grows beyond a sentence (mechanics, API
+sketch, trade-offs, open questions), put the detail in a
 `.ai/plans/<kebab-name>.md` file. **Plans are written in Russian** (a maintainer
-decision; the `.ru.md` suffix on some older plan files is historical — new plans
-use plain `.md` names with Russian content). Code identifiers, paths and code
-blocks stay as-is.
+decision), under plain `.md` names. Code identifiers, paths and code blocks stay
+as-is.
 
 **Plans are a development-only artifact, and nothing outside `.ai/` may point at
 one.** Not `README.md`, not `docs/`, and **not the code** — no `.ai/plans/...` in
 a docblock, a comment, a benchmark header, the makefile or a test. Plan links
 belong in `.ai/README.md` and in other `.ai/plans/` files, nowhere else.
 
-The reason is that a plan is a snapshot of a decision being made, while a
-comment is read as a statement about the code as it is. Plans get rewritten,
-renamed and deleted — several referenced from code had been deleted already — and
-a pointer into them ages into a dead end that a reader cannot even check.
-
-So when a comment wants to lean on a plan, put the fact in the comment instead:
-say what is true and why, in the sentence itself. If it is too long for that, it
-belongs in `docs/*.md`, and the comment points there.
+A plan is a snapshot of a decision; plans get rewritten, renamed and deleted
+(several linked from code already had been), while a comment is read as a
+statement about the code as it is. So when a comment wants to lean on a plan,
+state the fact and the reason in the comment itself; if that is too long, put it
+in `docs/*.md` and point there.
 
 ## Build & run
 
@@ -97,7 +98,7 @@ make test c="--filter=SleeperTest"  # run a specific test
 make php-stan           # PHPStan level 6
 make cs-fixer-check     # check code style (PSR-12 + custom rules)
 make cs-fixer-fix       # auto-fix code style
-make check              # cs-fixer, phpstan, ext-build, ext-check, tests
+make check              # cs-fixer, phpstan, ext-build, ext-test, ext-check, tests
 make bench-all          # run all benchmarks
 make bench-docs         # every measurement the docs quote, one session, results to .bench-runs/docs/
 ```
@@ -113,14 +114,13 @@ harness reads that variable. Every feature is on it, AMQP included; it is what
 the release publishes and what `make test` runs the whole tree against.
 
 There was a Go core, which this one was ported from; it was deleted in September
-2026, toolchain and all. Nothing is compatible with it, nothing is compared
-against it, and a change that would have broken it costs nothing — the question
-does not exist any more. If a comment or a doc still mentions it, that text is
-stale and should be fixed rather than honoured.
+2026. Nothing is compatible with or compared against it, so a change that would
+have broken it costs nothing. Any comment or doc that still mentions it is stale
+and should be fixed.
 
 Two AMQP options are refused rather than dropped in silence, because the driver
-cannot put them on the wire: a prefetch **size** (`basic.qos`'s prefetch-size is
-absent from its frame altogether) and `verify: false` on a TLS connection. Both
+cannot put them on the wire: a prefetch **size** (the driver leaves `basic.qos`'s
+prefetch-size out of the frame) and `verify: false` on a TLS connection. Both
 are in [docs/amqp.md](../docs/amqp.md).
 
 Two images build from the same commands. `docker/php/Dockerfile` is the development
@@ -188,49 +188,52 @@ feature's doc. Key PHP classes not covered there:
 - `Context/Context`, `Context/CoroutineContext` — the framework-neutral
   `find`/`has`/`set`/`forget` contract; parent links are recorded in
   `Scheduler::spawn` / `WaitGroup::add`.
-- `Features/FeatureExecutor` — coordinates feature execution, detects the async
-  context via `Fiber::getCurrent()`.
+- `Features/FeatureExecutor` — coordinates feature execution; it takes the async
+  or sync path from `State::getCurrentFlow()`, which counts a call as async only
+  when it runs on a fiber registered to a flow, and otherwise gives it a fresh
+  flow key on the synchronous path.
 - `Bson/` — the BSON value objects (`ObjectId`, `UTCDateTime`, `Binary`, …) the
   MongoDB feature hands out, mirroring `MongoDB\BSON\*` so an application moves
   over by changing `use` lines. They cross the boundary as what they are: the core
   reads an instance's public properties on the way in
-  (`features/mongodb/serializer/from_value.rs`) and creates the instance itself on
-  the way out (`to_value.rs`), so adding a type is a PHP class plus an arm in each
-  of those two files — [docs/value-conversion.md](../docs/value-conversion.md).
+  (`ext/src/features/mongodb/serializer/from_value.rs`) and creates the instance
+  itself on the way out (`to_value.rs` beside it), so adding a type is a PHP class
+  plus an arm in each of those two files —
+  [docs/value-conversion.md](../docs/value-conversion.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
-  long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
-  argv→constructor-override parsing, signal handlers, arming automatic preemption,
-  the orphaned-worker check, telemetry env. Together with
+  long-lived workers (the three servers and `Amqp/Consumer/QueueConsumer`):
+  argv→constructor-override parsing, the telemetry environment, arming automatic
+  preemption, the lifecycle log lines. `StopRequest` beside it answers whether the
+  worker was asked to stop — SIGTERM/SIGINT, or its master gone (the parent pid
+  changed) — asking the extension at most every 100 ms. Together with
   `FeatureExecutor::canAwait()` it is where a feature asks the runtime a question
   rather than reaching into the scheduler for the answer. The servers and the
   executor still name `Scheduler` — they spawn and serve, which is what it is for;
   what does not belong there is a feature reading its internals.
 - `Features/Amqp/RetryTopology` — the wait queues behind `publish(delayMs:)`, and
-  the only thing in the library that declares topology; it does so only when a
-  worker script calls it. `RetrySchedule` beside it answers how long a refused
+  the only thing in the library that declares topology; it does so only when the
+  application calls it. `RetrySchedule` beside it answers how long a refused
   publish waits before the next attempt.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`,
-  plus `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv.
-  It is a server without a socket: the extension opens the consumers (one channel per
-  unit of a queue's weight) and publishes every delivery of all of them as one
-  self-pumping stream, and `Scheduler::serve()` drives it exactly as it drives the
-  three servers — one coroutine per message, one graceful drain, no loop of its own.
-  A stop cancels the consumers and leaves their channels open so the
-  acknowledgements in flight land; a consumer the broker takes away is reopened on
-  the extension a second later, and only the connection going away ends one for good
-  — see [docs/amqp.md](../docs/amqp.md). The same reopening is what a delivery that
-  could not be settled asks for through `amqpReopenConsumer`: the broker hears nothing
-  about a lost acknowledgement and keeps the message against that consumer's prefetch,
-  so without it a prefetch of one stands the queue still until the broker's own
-  consumer timeout — half an hour. `PublishChannelPool` is what keeps a
-  prefetch above one from being a trap: a consumer's channel carries the messages of
-  every handler running on it, and a publisher confirm is counted per channel, so
-  `Delivery::channel()` hands out a channel lent to one handler instead. The pool
-  opens them lazily on connections of its own and grows a connection per 255, so no
-  weight-and-prefetch combination is ever refused for want of channel numbers; a
-  channel handed back with an answer the broker still owes it — a confirm or a return
-  nobody waited for — is given up rather than lent on, which is the same
-  misattribution delayed.
+  `QueueSpec`/`QueueSpecParser` (the JSON queue list, given to the constructor or as
+  `--queues`) and `PublishChannelPool`. A server without a socket: the extension opens the
+  consumers (one channel per unit of a queue's weight) and publishes every delivery
+  as one self-pumping stream, which `Scheduler::serve()` drives like the three
+  servers — one coroutine per message, one graceful drain, no loop of its own. A
+  stop cancels the consumers but leaves their channels open so in-flight
+  acknowledgements land. A consumer the broker takes away is reopened by the
+  extension a second later; only the connection going away ends one for good. A
+  delivery that could not be settled asks for the same reopening
+  (`amqpReopenConsumer`): the broker is never told of a lost acknowledgement and
+  counts the message against the consumer's prefetch, so with a prefetch of one the
+  queue would stall until the broker's consumer timeout (half an hour).
+  `PublishChannelPool` makes a prefetch above one safe: publisher confirms are
+  counted per channel and a consumer's channel carries every handler running on
+  it, so `Delivery::channel()` lends each handler a channel of its own. Channels
+  open lazily on the pool's own connections, one more connection per 255 channels,
+  so no weight-and-prefetch combination is refused; a channel returned while the
+  broker still owes it a confirm or a return is discarded, not lent again. See
+  [docs/amqp.md](../docs/amqp.md).
 - `Features/Redis/` — the Redis feature. `Connection` is the entry point and the
   pool key; the typed methods live in `Support/*CommandsTrait` and all go through
   `command()`, which is equally the way to call a command that has no method.
@@ -242,39 +245,58 @@ feature's doc. Key PHP classes not covered there:
   own for the call, and a subscription owns one outright — see
   [docs/redis.md](../docs/redis.md).
 - `Features/Files/` — the file feature. `Files` is the whole public surface, a
-  static facade like the old `Sleeper`. Its one-shot methods build a
-  `FilesPayload` envelope and go through its own `execute()`; the three stream
-  factories hand the envelope to a `Support/BatchIterator` subclass
-  (`Results/ChunksResult`, `LinesResult`, `WalkResult`) that pushes it itself and
-  pulls the later batches with `FeatureExecutor::next`, and `FileWriter`
-  pushes its chunks through an `execute()` of its own. All four routes end at
-  `Support/FilesFailure`, which turns a task failure into the exception named for
-  its case — read from the `files[<kind>]` prefix the core writes, never matched
-  out of the message, which holds a path the caller chose.
-  `FileWriter`'s `write()` answers only once the chunk is written; that wait
-  is the whole of the backpressure. The writer's open answers as an unfinished
-  stream on purpose: the synchronous path stops a flow the moment a result says
-  it is the last one, and the flow is what the session hangs on.
-  One rule runs through the whole feature and is worth keeping in mind before
-  changing any of it: a failed or cancelled write removes the file **only when
-  that write created it** (`mode: Create`). A Replace over an existing file
-  leaves a partial one, because removing it would destroy an inode, permissions
-  and ownership the call never made — and, on a symlink, unlink the link while
-  leaving its target empty.
+  static facade like `Sleeper`. One-shot methods build a `Payloads/FilesPayload`
+  and go through `Files::execute()`. The three stream factories (`readChunks`,
+  `readLines`, `walk`) hand it to a `Support/BatchIterator` subclass
+  (`Results/ChunksResult`, `LinesResult`, `WalkResult`), which pushes it and pulls
+  later batches with `FeatureExecutor::next`. `FileWriter` pushes its chunks
+  through its own `execute()`. Every route ends at `Support/FilesFailure`, which
+  picks the exception from the `files[<kind>]` prefix the core writes — never from
+  the message, which holds a caller-chosen path. `FileWriter::write()` returns
+  only once the chunk is written; that wait is the whole backpressure. The
+  writer's open answers as an unfinished stream on purpose: the synchronous path
+  stops a flow when a result says it is the last, and the session hangs on that
+  flow. A failed or cancelled write removes the file **only if that write created
+  it** (`mode: Create`). A Replace over an existing file leaves a partial one,
+  because removing it would destroy an inode, permissions and ownership the call
+  never made — and on a symlink would unlink the link and leave its target empty.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
-- `Worker/` — the worker master (a process supervisor that does NOT load the
-  extension): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
-  `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
-  `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
-  (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
-  (its live slots, backoff and rolling reload). The groups are generic: everything
-  a worker needs rides in the group's `server` block, forwarded to its argv
-  untouched, so the master stays worker-agnostic. `Heartbeat` is the one piece of
-  `Worker/` that runs in the worker: a byte per serve-loop pass on the pipe the
-  master's watchdog reads, which is the only signal that says whether the worker's
-  PHP thread — as opposed to the extension's runtime — is still moving.
+- `Worker/` — the worker master, a process supervisor built in PHP in the process that
+  loaded the application, which loads the extension for process control only
+  (signals, kill, fork) and never starts its runtime: `run()` marks the process as the
+  master's (`ProcessControl::markMaster()`), after which the extension refuses an
+  asynchronous call in it. `WorkerMaster` takes a list of `WorkerGroupConfig` — a
+  name, a role (a closure the worker calls right after its fork, with a
+  `WorkerContext`: group, slot, master pid; also `WorkerContext::current()`), a count
+  and the supervision settings, validated in the constructors. Each group is a
+  `WorkerGroup` (live slots, backoff, watchdog, `maxRequests` recycling with the
+  replacement forked first, the leaving worker finishing as a `DrainingWorker`). Every
+  worker is a `ForkedWorkerProcess` (a `WorkerProcess`: journal pipes, heartbeat,
+  outcome); its child half is `ForkedWorker` (environment, the application's error
+  handlers back, `WorkerContext::enter()`, the role, `_exit` — never a return into the
+  master's frames). The descriptors open when `run()` is called are the application's
+  and stay with the workers; the rest of the master's are pointed at /dev/null in
+  them. There is no reload: new code is a new master. `MasterControl` reaches a running
+  master from another process by `runtimeDir` and `name` (`isRunning()`, `state()`,
+  `stop()`), plus `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/
+  `MasterStateFile`, `MasterLogger`, `RestartPolicy`.
+
+  The worker writes one byte at a time (`Process/HeartbeatMarkEnum`) on a pipe its
+  fork made: alive (a scheduler pass; the watchdog times it, and it is the only
+  signal that the worker's PHP thread, not just the extension's runtime, is still
+  moving), ready (`Scheduler::markReady()`, said by `serve()` itself) and recycling
+  (a server's own limit reached). The extension holds the worker's end (see
+  `process/` below). `Scheduler` asks once whether there is one, throttles alive to
+  every 500 ms and says ready once; `ForkedWorker` makes it ask afresh
+  (`Scheduler::forgetSupervision()`). A group that never comes up ends the master with
+  `WorkerMaster::EXIT_NEVER_CAME_UP` (70).
+- `Process/ProcessControl` — process control for the worker master and the
+  long-lived workers it runs, over the `process` export, in place of ext-pcntl and
+  ext-posix, and the worker's heartbeat marks; `@internal`. Commands are
+  `ProcessCommandEnum` cases, signals go by name (`ProcessSignalEnum`), because
+  their numbers differ between platforms.
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
@@ -285,10 +307,27 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `amqpReopenConsumer`, `destroy`, `version`)
+  `amqpReopenConsumer`, `destroy`, `version`, `process`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
-  nothing starts until the first push, and a `pthread_atfork` handler flags the
-  inherited runtime so the next call rebuilds it
+  nothing starts until the first push (the exports that only act on running work —
+  `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones,
+  `amqpStopConsuming`, `amqpReopenConsumer` — answer without starting it), and a
+  `pthread_atfork` handler flags the inherited runtime so the next call rebuilds
+  it. Whatever a child must not inherit lives on the `Core`: the
+  feature registries, the streaming states, the telemetry registry and the log sink
+- `process/` — process control behind the one `process` export; synchronous,
+  runtime-free, and a fork is refused while any thread runs. Fork with the child
+  prepared before PHP runs in it (stdio onto pipes, the parent's other descriptors
+  onto /dev/null, signal watching undone, and through the glue the random
+  generators unseeded and the parent's objects marked destroyed), `_exit`, `kill`,
+  `waitpid`, `getppid`, signals recorded by a handler that only sets a bit, and the
+  master's mark (`mst`, cleared in a fork's child), which `push` checks before it
+  starts the runtime. It also holds the worker's end of its heartbeat pipe
+  (`heartbeat.rs`), the one the fork made, written by the extension and never
+  through a PHP stream (`php://fd` opens a copy without close-on-exec, which
+  everything the process runs would inherit). In a fork's child the descriptors it
+  keeps and its placeholders on /dev/null are close-on-exec: a program a worker
+  starts gets its stdio and nothing else (`WorkerDescriptorsTest`)
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly
@@ -297,9 +336,12 @@ The core (`ext/src/`), module by module:
 - `states/` — registry of streaming states (cursor batches, request-body chunks,
   client message streams) driven by `next()`; the server accept streams are
   self-pumping and bypass it
-- `logger/` — fire-and-forget async log sink: a background task writes
-  pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so
-  the loop never blocks on log I/O
+- `logger/` — fire-and-forget async log sink: a background thread writes
+  pre-formatted lines (buffered, timer-flushed, drops on overflow), so the loop never
+  blocks on log I/O. Access lines (`logger::access`) go where `SCONCUR_ACCESS_LOG` says —
+  stdout, a file of the day the worker writes itself, or nowhere — which the worker
+  master sets from a group's `accessLog`; every other line goes to stdout. Dropped lines
+  are reported on stderr at most once a minute
 - `features/files/` — the file feature. Every syscall goes through `tokio::fs` or
   a `spawn_blocking`, and that is a correctness rule rather than a style one: the
   runtime has one worker thread by default, so a synchronous read would stand in
@@ -334,11 +376,12 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`), Files (`fls`)
+  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`), Files (`fls`), and Unknown
+  (`unk`), the method an unknown-method failure comes back under
 - Sub-operations selected via the payload envelope's `cm`:
-  `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
-  `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
-  Rollback `rlb`), `HttpClientCommand` (Request `req`, UploadChunk `upc`,
+  `SocketClientCommandEnum`/`WsClientCommandEnum` (Connect `con`, Send `snd`,
+  Close `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit
+  `cmt`, Rollback `rlb`), `HttpClientCommandEnum` (Request `req`, UploadChunk `upc`,
   UploadEnd `upe`), `AmqpCommandEnum` (Connect `con`, ChannelOpen `cho`,
   QueueDeclare `qud`, Publish `pub`, Consume `csm`, … — see
   `src/Features/Amqp/AmqpCommandEnum.php`), MongoDB's `CommandEnum` (InsertOne
@@ -363,50 +406,64 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `ext/src/**/mod tests` — the Rust core's own unit tests, run by `make ext-test`
   and part of `make check`. They exist for what the PHP suites can only catch
   statistically: a race whose window is microseconds wide surfaces there as one
-  failure in forty full runs and here as a red test. Kept beside their subject
-  in a `#[cfg(test)] mod tests`, beside the code they check. A change
+  failure in forty full runs and here as a red test. Kept in a
+  `#[cfg(test)] mod tests` beside the code they check. A change
   to concurrent behaviour in `ext/` — a drain, a cancellation, a select over two
   ready branches — belongs here, and the way to show a test earns its keep is to
   undo the fix and watch it fail
 - `tests/feature/` — PHPUnit feature tests with `BaseTestCase` (extension
   lifecycle) and `BaseAsyncTestCase` (async event ordering framework)
-- `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
+- `tests/impl/` — test helpers (backend resolvers, app bootstrap, server, worker and
+  consumer harnesses)
 - `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
   by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
-  `socket/`, `ws/`, `amqp/`, `redis/`, `files/` (each holds its per-operation benches plus, for the protocols,
-  the server benches and the load scripts), `db/` (a whole DB session: repeated
-  runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
-  `runtime/` (scheduler and the boundary, no backend involved) and `lib/`
-  (the shared harness the benches include). A new bench goes into its
+  `socket/`, `ws/`, `amqp/`, `redis/`, `files/` (each holds its per-operation
+  benches plus, for the protocols, the server benches and the load scripts), `db/`
+  (a whole DB session: repeated runs and their aggregation into the markdown rows
+  of `docs/benchmarks.md`),
+  `runtime/` (scheduler and the boundary, no backend involved), `worker/` (what a
+  pool of workers costs in memory), `docs/` (`run.py`, the `bench-docs` driver) and
+  `lib/` (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
-  gets a `bench-<tech>-<operation>` make target.
+  gets a `bench-<tech>-<operation>` make target. Every bench, soak and profiling
+  target is listed in [docs/bench-catalog.md](../docs/bench-catalog.md) — see the
+  workflow rule below.
 - `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP
   consumer), the counterpart of `tests/servers/`
-- `tests/mem-leak/` — memory leak stress tests. `make mem-leak-long-flow
-  scenario=<name> seconds=<n>` covers what no single feature owns: streams opened by
-  one coroutine that never ends (mongodb, sql-query, sql-transaction, redis-scan,
-  redis-subscribe), whose flow is never stopped between them. It prints RSS beside
-  the PHP heap, because what such a flow keeps is native memory. Three features have
-  a soak of their own. `make mem-leak-redis scenario=<name> seconds=<n>` runs one of five
-  scenarios (command, pipeline, blocking, cursor, subscribe) and reports the PHP
-  heap beside the server's own client count — the three things that feature opens
-  connections for (a blocking command, a cursor, a subscription) would show up
-  there and nowhere else. The AMQP soak has
-  `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-  and reports the broker's own connections,
-  channels and consumers beside them — a worker flat on its own memory can still leave
-  sockets behind on the other side. Two scenarios cover `QueueConsumer` and
-  `PublishChannelPool`: `consumer` takes a handler through all twelve of its endings
-  (settled by the runtime, settled by the handler, refused, thrown, cut by a deadline,
-  a channel given back clean, dirty and dead), and `consumer-lost` takes the ground
-  away — the publish connection closed from the broker, the queue deleted under a
-  running consumer. A second publish socket appearing and being reaped again is that
-  pool recovering, not a leak: it carries no channels and the extension closes it after
-  five idle minutes. The Files soak is `make mem-leak-files scenario=<name> seconds=<n>`
-  (read-large, read-stream, write-stream, copy, walk, abandoned), and it reports the
-  process RSS beside the PHP heap because what a file stream holds is native memory.
-  `abandoned` is the one that earns its keep: streams broken out of halfway and a writer
-  dropped without a close are released by nothing but the flow ending
+- `tests/mem-leak/` — memory leak soaks, each running one scenario in a loop:
+  - `make mem-leak-long-flow scenario=<name> seconds=<n>` — what no single feature
+    owns: streams opened by one coroutine that never ends (mongodb, sql-query,
+    sql-transaction, redis-scan, redis-subscribe), so its flow is never stopped
+    between them. Prints RSS beside the PHP heap: what such a flow keeps is native
+    memory.
+  - `make mem-leak-redis scenario=<name> seconds=<n>` — command, pipeline,
+    blocking, cursor, subscribe. The PHP heap beside the server's own client
+    count, where a leaked connection for a blocking command, a cursor or a
+    subscription would show and nowhere else.
+  - `make mem-leak-amqp scenario=<name> seconds=<n>` — publish, churn, consume,
+    fanout, errors, confirms, consume-async, stop, consumer, consumer-lost. The PHP
+    heap and task count beside the broker's own connections, channels and
+    consumers — a worker flat on its own memory can still leave sockets behind on
+    the other side. `consumer` takes a `QueueConsumer` handler through all twelve
+    of its endings (settled by the runtime, settled by the handler, refused,
+    thrown, cut by a deadline, a channel given back clean, dirty and dead);
+    `consumer-lost` takes the ground away (the publish connection closed from the
+    broker, the queue deleted under a running consumer). A second publish socket
+    that appears and is reaped again is `PublishChannelPool` recovering, not a
+    leak: it carries no channels and the extension closes it after five idle
+    minutes.
+  - `make mem-leak-files scenario=<name> seconds=<n>` — read-large, read-stream,
+    write-stream, copy, walk, abandoned; process RSS beside the PHP heap, because
+    what a file stream holds is native memory. `abandoned` is the one that earns
+    its keep: streams broken out of halfway and a writer dropped without a close
+    are released by nothing but the flow ending.
+  - `make mem-leak-worker scenario=<list> seconds=<n> launch=<fork|preload>` — the
+    worker master under failures (oom, kill, exit, fatal, spin, block, recycle,
+    crash-at-start, sigterm, throw, disconnect, slowloris, bad-http, orphan,
+    handler-timeout, external, preempt): what the master and the surviving workers
+    keep, and the requests a death costs. `make mem-leak-worker-summary` lays out a
+    saved run, `make mem-leak-worker-exit-timing` times a death by `exit()`. How to
+    read them: [soak-analysis.md](soak-analysis.md).
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,
@@ -445,9 +502,10 @@ Russian by a maintainer decision.
 Everything else is English, with no exceptions: code and its comments, PHPDoc,
 Rust comments, exception and log messages, test names and failure messages, shell
 and benchmark scripts including everything they print, table headers and verdict
-strings in their output, and commit messages. A benchmark whose table headers or verdict strings come out
-in Russian is a bug, not a style preference — that output is read by contributors
-who do not speak Russian, and it ends up pasted into issues and docs.
+strings in their output, and commit messages. A benchmark whose table headers or
+verdict strings come out in Russian is a bug, not a style preference — that output
+is read by contributors who do not speak Russian, and it ends up pasted into
+issues and docs.
 
 ### Naming
 
@@ -536,10 +594,7 @@ languages. They were deliberately reworked to not read as AI-generated. Rules:
 - **No duplication across docs.** The general limits (Linux only, NTS only, what
   a long-lived process buys over FPM, what `fork` does) live in the README, and
   feature docs link to it rather than restating them — a restatement is what goes
-  stale, and this line did: it used to say "CLI only, no `pcntl_fork`", both of
-  which the README has contradicted since FPM and post-work `fork` were made to
-  work;
-  `SO_REUSEPORT` is canonical in `docs/http-server.md`, and the other servers
+  stale; `SO_REUSEPORT` is canonical in `docs/http-server.md`, and the other servers
   reference it and describe only their delta.
 - **Do not put source line numbers in docs** — they go stale. Reference file paths
   only.
@@ -614,6 +669,11 @@ against the core the run loaded, the module entry included.
 
 - Always wait for explicit user approval before committing or pushing, and always
   propose a commit message before committing.
+- Keep [docs/bench-catalog.md](../docs/bench-catalog.md) and its `.ru.md` current. A
+  change to a benchmark, a soak or a profiling tool — its script, its make target, its
+  parameters, what it measures, or a file added, renamed, moved or removed under
+  `tests/benchmarks/`, `tests/mem-leak/` or `ext/bench/` — updates the catalog in the
+  same commit, both languages.
 - Never create a git branch without an explicit, direct instruction from the user.
   Work on and commit to the current branch (normally `master`).
 - Before implementing any task, propose a plan and wait for explicit user
@@ -626,8 +686,8 @@ against the core the run loaded, the module entry included.
 When referring to any class, method, or code fragment in a reply, always give the
 full path from the project root plus the line number, so the reference is
 clickable and jumps straight to the spot in the IDE: whole file
-`app/.../MasterWorkerManager.php`, specific spot
-`app/.../MasterWorkerManager.php:16`. The line number is required when pointing at
+`src/Scheduler/Scheduler.php`, specific spot
+`src/Scheduler/Scheduler.php:235`. The line number is required when pointing at
 concrete logic; it may be omitted only when referring to a file as a whole. (This
 applies to replies — docs carry no line numbers, see "Documentation style".)
 

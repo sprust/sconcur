@@ -90,9 +90,9 @@ run_rung() {
 }
 
 echo "=================================================================="
-echo " Attribution ladder: Go core vs Rust core"
+echo " Attribution ladder: the request before PHP and the crossing into it"
 echo "   rounds          : $ROUNDS   (medians reported)"
-echo "   server procs    : $SERVERS  (pinned, reusePort)"
+echo "   server procs    : $SERVERS  (pinned, SO_REUSEPORT)"
 echo "   wrk             : $WRK_THREADS threads / $CONNECTIONS connections / ${DURATION}s"
 echo "=================================================================="
 

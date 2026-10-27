@@ -43,8 +43,8 @@ use Throwable;
  */
 
 // Build the server from argv: each --name=value maps to the matching WsServer
-// constructor parameter. Under WorkerMaster the injected --masterPid wires the orphan
-// check. onError opts a specific failure into a final message; others stay silent.
+// constructor parameter. Under the test master (tests/servers/worker/master.php) the
+// injected --masterPid wires the orphan check; in any fork of a master it is on anyway. onError opts a specific failure into a final message; others stay silent.
 $server = WsServer::fromArgs(
     $_SERVER['argv'],
     onError: static function (Throwable $exception, Connection $connection): void {

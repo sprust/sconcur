@@ -26,9 +26,11 @@ class MasterLock
 
     public function acquire(): void
     {
-        // "e" → O_CLOEXEC: spawned workers must NOT inherit this fd, otherwise an
-        // orphaned worker would keep the lock held after the master died (breaking the
-        // single-instance guard and crash detection).
+        // No worker may hold this fd, otherwise an orphaned worker would keep the lock
+        // held after the master died (breaking the single-instance guard and crash
+        // detection). A fork points it at /dev/null, as every descriptor the master opened
+        // after run() began (ProcessControl::fork); "e" → O_CLOEXEC keeps it from any
+        // program the process starts.
         $handle = fopen($this->path, 'ce');
 
         if ($handle === false) {
