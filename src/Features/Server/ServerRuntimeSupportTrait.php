@@ -124,12 +124,37 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * The listener as a server's startup line names it: the address it binds, or the
-     * descriptor it accepts on when it was handed one.
+     * The descriptor a server's address hands over, or null for one to bind. "fd://N" is
+     * a listening socket bound elsewhere, accepted on as it is, so there is nothing for
+     * reusePort to set and it is refused beside one rather than silently ignored.
      */
-    protected static function describeListener(string $address, ?int $listenFd): string
+    protected static function listenerDescriptor(string $address, bool $reusePort): ?int
     {
-        return $listenFd === null ? $address : 'fd ' . $listenFd;
+        if (!str_starts_with($address, 'fd://')) {
+            return null;
+        }
+
+        $descriptor = substr($address, strlen('fd://'));
+
+        if (!ctype_digit($descriptor)) {
+            throw new InvalidServerArgumentException(
+                message: sprintf(
+                    'Invalid address %s: a descriptor is given as fd://<number>.',
+                    $address,
+                ),
+            );
+        }
+
+        if ($reusePort) {
+            throw new InvalidServerArgumentException(
+                message: sprintf(
+                    'reusePort does not apply to %s: the socket is bound already.',
+                    $address,
+                ),
+            );
+        }
+
+        return (int) $descriptor;
     }
 
     /**

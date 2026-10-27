@@ -84,8 +84,9 @@ Written like an ordinary feature's (mirrored, `serde(rename)` = the short keys,
 cross-references). A server needs at least three:
 
 1. `ServePayload` — the listener address plus settings (timeouts in ms, limits in
-   bytes, `reusePort`, and `listenFd` — a listening socket bound elsewhere, accepted
-   on instead of binding the address).
+   bytes, `reusePort`, and `listenFd` — the descriptor of a listening socket bound
+   elsewhere, accepted on instead of binding the address; the server fills it from an
+   `fd://N` address, see `listenerDescriptor()`).
 2. `RespondPayload` — one response record. The `op` field selects the record kind;
    for `HttpServer` these are `OP_FULL`(0) / `OP_HEAD`(1) / `OP_CHUNK`(2) /
    `OP_END`(3), built by the factories `RespondPayload::full()/head()/chunk()/end()`.
@@ -130,8 +131,9 @@ extracted into the stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`
   `Scheduler::serve()` instead and needs this only if it has no serve loop of its own;
 - `logServerEvent(string $message): void` — one timestamped line about the worker's own
   lifecycle, on stdout;
-- `describeListener(string $address, ?int $listenFd): string` — the listener as the
-  startup line names it: the address, or `fd N` for a socket the server was handed.
+- `listenerDescriptor(string $address, bool $reusePort): ?int` — the descriptor an
+  `fd://N` address hands over, or null for an address to bind; it throws
+  `InvalidServerArgumentException` on a malformed `fd://` and on `reusePort` beside one.
 
 The stop check is `SConcur\Features\Server\StopRequest`.
 `StopRequest::watch(?int $masterPid)` starts watching SIGTERM/SIGINT and returns the
@@ -195,14 +197,14 @@ different flow than the request) and `server_states` (`flowKey` → `ServerState
 so stop-accepting can find the listener).
 
 `handle_serve` parses `ServePayload`, opens the listener (`listen::open()` in
-`listen.rs`: binds the address, with `SO_REUSEPORT` when asked, or takes over
-`listenFd`), registers the `ServerState`, spawns the accept loop and then runs the
-self-pumping stream as the serve task's own body: every accepted request is
+`listen.rs`: binds the address, with `SO_REUSEPORT` when asked, or takes over the
+`listenFd` descriptor), registers the `ServerState`, spawns the accept loop and then
+runs the self-pumping stream as the serve task's own body: every accepted request is
 published as the next result of the serve task, until the flow is cancelled. This
 request stream bypasses the `states` registry — that one serves only the secondary
 streams (the inbound message streams). A fast side cannot outrun a slow one at any
-layer: publishing a result waits on the shared results buffer, the requests
-channel buffers accepts, and beyond that the connection task itself waits.
+layer: publishing a result waits on the shared results buffer, the requests channel
+buffers accepts, and beyond that the connection task itself waits.
 
 The accept loop (`accept_loop()` in `server.rs`) spawns a task per connection. Its
 per-request service (the `service_fn` closure there) takes a `maxConcurrency` permit,
@@ -251,7 +253,7 @@ The feature's `stop_accepting(flow_key)` finds the `ServerState` in
 `server_states` and cancels its `stop_accepting` token, which ends the accept loop
 and nothing else — the requests already accepted are untouched. In a `SO_REUSEPORT`
 pool the kernel immediately hands new connections to the other workers, and on a
-shared `listenFd` socket the other workers keep accepting from it, while this
+shared `fd://` socket the other workers keep accepting from it, while this
 process finishes its own. The HTTP server goes further: once accepting stops it takes
 what is queued on its own socket (`Listener::take_queued()`), answers every request
 with `Connection: close` and shuts down a connection still open a second after the stop
@@ -303,7 +305,7 @@ infrastructure reference is `tests/impl/HttpServer/TestHttpServer.php` (spawn vi
 `tests/feature/Features/HttpServer/BaseHttpServerTestCase.php`. Cover a basic
 request/response, streaming, `maxConcurrency`, `handlerTimeoutMs` (including a
 natively-blocking handler), graceful shutdown, `SO_REUSEPORT` (two servers on one
-port), a shared `listenFd`, `maxRequests` and orphan self-termination. Logic the
+port), a shared `fd://` socket, `maxRequests` and orphan self-termination. Logic the
 PHP suites can only catch statistically — a race whose window is microseconds wide
 — goes into the core's own unit tests (`#[cfg(test)] mod tests` beside the code,
 run by `make ext-test`), and the end-to-end scenario under the master is
@@ -318,10 +320,10 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Request/response shape: your own DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`fromEnvironment`/`logServerEvent`/`describeListener`;
+      `parseArgs`/`fromEnvironment`/`logServerEvent`/`listenerDescriptor`;
       `StopRequest::watch()` for `shouldStop`.
 - [ ] `fromArgs()` via `self::parseArgs($argv)`, accepting `--masterPid` and
-      `--listenFd`, for a script that runs the server on its own.
+      `--address` (`fd://N` included), for a script that runs the server on its own.
 - [ ] `serve()`: start the listener via `push(ServePayload)` plus
       `Scheduler::serve(...)` with `onRequest`/`shouldStop`/`onDrainStart`/
       `onShutdownStep`, and the `preemptionQuantumMs`/`handlerTimeoutMs` the
@@ -342,7 +344,7 @@ Rust:
 - [ ] A no-result write (`nr`): `handle_detached()` on the feature and the method
       in `detachable()` (`ext/src/handler/mod.rs`).
 - [ ] The server-state and pending-request registries; `stop_accepting(flow_key)`;
-      `httpserver::listen::open()` for `SO_REUSEPORT` and `listenFd`, the one
+      `httpserver::listen::open()` for `SO_REUSEPORT` and an `fd://` socket, the one
       listener every server opens.
 - [ ] The flow's cancellation token honoured; for a request-based server,
       `handlerTimeoutMs` in the connection task and the access log written on the

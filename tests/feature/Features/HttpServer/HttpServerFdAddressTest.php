@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\HttpServer;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use SConcur\Exceptions\Server\InvalidServerArgumentException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -12,13 +13,14 @@ use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\PhpScript;
 
 /**
- * A server accepting on a socket it was handed rather than one it bound: the shared
- * socket of a worker master's group, or one from systemd socket activation.
+ * A server accepting on a socket it was handed rather than one it bound — the address
+ * "fd://N": one an application bound before its master forked the workers, or one from
+ * systemd socket activation.
  *
  * The scenarios that fork run in a process of their own, since a fork is refused once
  * the extension's runtime runs, and this process started it long ago.
  */
-class HttpServerListenFdTest extends BaseTestCase
+class HttpServerFdAddressTest extends BaseTestCase
 {
     /**
      * Two workers forked off one bound socket accept from the same queue. Stopping one
@@ -55,7 +57,7 @@ class HttpServerListenFdTest extends BaseTestCase
                     $server = new HttpServer(
                         serverRequestFactory: $factory,
                         responseFactory: $factory,
-                        listenFd: $descriptor,
+                        address: 'fd://' . $descriptor,
                     );
 
                     $server->serve(static function () use ($factory) {
@@ -196,7 +198,7 @@ class HttpServerListenFdTest extends BaseTestCase
                     serverRequestFactory: $factory,
                     responseFactory: $factory,
                     maxRequests: 1,
-                    listenFd: $descriptor,
+                    address: 'fd://' . $descriptor,
                 );
 
                 $server->serve(static function () use ($factory, $round) {
@@ -230,11 +232,52 @@ class HttpServerListenFdTest extends BaseTestCase
         $server = new HttpServer(
             serverRequestFactory: $factory,
             responseFactory: $factory,
-            listenFd: 0,
+            address: 'fd://0',
         );
 
         $this->expectException(TaskErrorException::class);
         $this->expectExceptionMessage('descriptor 0 is not a listening socket');
+
+        $server->serve(static fn() => $factory->createResponse(200));
+    }
+
+    /**
+     * reusePort has nothing to set on a socket that is bound already, so it is refused
+     * beside fd:// rather than ignored.
+     */
+    public function testReusePortBesideADescriptorIsRefused(): void
+    {
+        $factory = new Psr17Factory();
+
+        $server = new HttpServer(
+            serverRequestFactory: $factory,
+            responseFactory: $factory,
+            address: 'fd://3',
+            reusePort: true,
+        );
+
+        $this->expectException(InvalidServerArgumentException::class);
+        $this->expectExceptionMessage('reusePort does not apply to fd://3');
+
+        $server->serve(static fn() => $factory->createResponse(200));
+    }
+
+    /**
+     * An fd:// address without a number is refused with the form it expects, not taken
+     * for a host to bind.
+     */
+    public function testAMalformedDescriptorAddressIsRefused(): void
+    {
+        $factory = new Psr17Factory();
+
+        $server = HttpServer::fromArgs(
+            argv: ['server.php', '--address=fd://three'],
+            serverRequestFactory: $factory,
+            responseFactory: $factory,
+        );
+
+        $this->expectException(InvalidServerArgumentException::class);
+        $this->expectExceptionMessage('a descriptor is given as fd://<number>');
 
         $server->serve(static fn() => $factory->createResponse(200));
     }

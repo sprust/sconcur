@@ -228,9 +228,9 @@ class ProcessControl
 
     /**
      * Binds a listening TCP socket and answers its descriptor, for workers to share: a
-     * server given it as listenFd accepts from it instead of binding its own. Every worker
-     * that holds it accepts from the one queue, so a worker that stops leaves the
-     * connections waiting there to the others instead of resetting them.
+     * server given it as its address, "fd://N", accepts from it instead of binding its
+     * own. Every worker that holds it accepts from the one queue, so a worker that stops
+     * leaves the connections waiting there to the others instead of resetting them.
      *
      * The socket is close-on-exec: a fork keeps it — bound before the master is built, it is
      * the application's, and every worker the master forks holds it — and no program the

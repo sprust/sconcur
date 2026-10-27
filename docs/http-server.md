@@ -117,7 +117,7 @@ timeouts are in milliseconds.
 |---|---|---|
 | `serverRequestFactory` | — (required) | PSR-17 `ServerRequestFactoryInterface` — builds the handler's request. |
 | `responseFactory` | — (required) | PSR-17 `ResponseFactoryInterface` — builds the fallback `413`/`500` responses. |
-| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`. |
+| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`, or `fd://N` — a listening socket bound elsewhere to accept on (`reusePort` must then stay off), see [one socket for the whole pool](#one-socket-for-the-whole-pool). |
 | `readHeaderTimeoutMs` | `10000` | Accepted and not applied — see [Connection timeouts](#connection-timeouts). |
 | `readTimeoutMs` | `30000` | Accepted and not applied. |
 | `writeTimeoutMs` | `30000` | Accepted and not applied. |
@@ -128,7 +128,6 @@ timeouts are in milliseconds.
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — the PHP handler is not unwound; the extension still answers `504` after 60 s. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
 | `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
-| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` (`address` and `reusePort` are then not used) — systemd socket activation, say; see [one socket for the whole pool](#one-socket-for-the-whole-pool). |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent. `null` — the master that forked this worker (`WorkerContext`, see the [worker master](worker-master.md#self-termination-of-orphaned-workers)), or no check outside one. |
 | `telemetrySocket` | `''` (off) | Unix socket for stats snapshots ([stats](admin-stats.md)). Empty — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
@@ -470,11 +469,25 @@ Caveats:
 
 ### One socket for the whole pool
 
-Instead of binding `address`, a server can accept on a listening socket bound elsewhere:
-`listenFd` takes its descriptor — the one systemd's socket activation hands over, say.
+Instead of binding an address, a server can accept on a listening socket bound
+elsewhere: `address: 'fd://3'` (or `--address=fd://3`) names its descriptor — the one
+systemd's socket activation hands over, say, or one the application bound with
+`ProcessControl::bind()` before it built its master, which every forked worker then
+holds. Nothing is bound, so `reusePort` has nothing to set and is refused beside it.
 The server takes over a copy of the descriptor, so stopping it closes the copy and
 leaves the socket to whoever else holds it, and a stopping server leaves what is queued
 on the socket to them.
+
+```php
+$descriptor = ProcessControl::bind('0.0.0.0:8080');
+
+// in the role of every worker of the group
+$server = new HttpServer(
+    serverRequestFactory: $factory,
+    responseFactory: $factory,
+    address: 'fd://' . $descriptor,
+);
+```
 
 Several processes accepting on one socket all wake for every connection, and the first
 to run takes what is queued: across 12 workers the busiest served 7–9 times as many
@@ -583,7 +596,7 @@ connections to its neighbours. Then:
 
 1. The connections the kernel had already queued on the socket, and the server had not
    accepted yet, are taken and served rather than reset with the socket. (Not for a
-   socket handed over as `listenFd`: whoever else holds it goes on taking from its
+   socket handed over as `fd://`: whoever else holds it goes on taking from its
    queue.)
 2. Every response from now on goes out with `Connection: close`, and the connection
    closes after it: the client sends its next request to a neighbour. A request already
@@ -650,7 +663,7 @@ connection reads the handler's writes from) and `server_states` (`flowKey →`
 server state, for `StopAccepting`). It is also the accept loop and the
 per-request service over `hyper`, handling the concurrency semaphore, the
 handler timeout, 503/504 and the graceful stop of the connections. `listen.rs` is the
-TCP listener, `SO_REUSEPORT`, a socket handed over as `listenFd`, and taking what is
+TCP listener, `SO_REUSEPORT`, a socket handed over as `fd://`, and taking what is
 queued on the socket when the server stops.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every

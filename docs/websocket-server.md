@@ -109,7 +109,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
-| `address` | `0.0.0.0:9200` | listener address `host:port` |
+| `address` | `0.0.0.0:9200` | listener address `host:port`, or `fd://N` — a listening socket bound elsewhere (systemd socket activation, say; `reusePort` must then stay off), see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
 | `handshakeTimeoutMs` | `10000` | accepted and not applied |
 | `idleTimeoutMs` | `0` (off) | idle timeout between inbound frames — data messages and the client's pongs, so a client that answers the keepalive ping stays connected |
 | `writeTimeoutMs` | `30000` | max time to send one message (and one ping) |
@@ -120,7 +120,6 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
-| `listenFd` | `null` | A listening socket bound elsewhere (systemd socket activation, say), accepted on instead of `address` — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | hosts the `Origin` header may name, port included, compared ignoring case; `*` — any (empty — the check is skipped; a request without `Origin` always passes) |
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols; the first one in this list that the client offers wins |
