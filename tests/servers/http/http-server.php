@@ -1340,6 +1340,7 @@ function runLadderServer(string $mode, array $argv): void
             maxConcurrency: 0,
             handlerTimeoutMs: 60_000,
             reusePort: $reusePort,
+            listenFd: null,
             telemetrySocket: '',
             serverName: 'sconcur-ladder',
             telemetryIntervalMs: 0,
