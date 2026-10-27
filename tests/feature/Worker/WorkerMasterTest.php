@@ -106,6 +106,41 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * SIGTERM frees the native call a hung worker is in, and it leaves with code 0. It still
+     * failed, so OnFailure refills its slot.
+     */
+    public function testOnFailurePolicyReplacesAWorkerTheWatchdogStopped(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 5_000,
+            'restartPolicy'     => 'on-failure',
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            $master->get('/native-msleep/20000');
+
+            $replaced = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid !== 0 && $pid !== $before;
+                },
+                timeoutSeconds: 25.0,
+            );
+
+            self::assertTrue($replaced, 'OnFailure should replace a worker the watchdog stopped: ' . $master->logText());
+            self::assertStringNotContainsString('not restarting', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testAnIdleWorkerIsNotMistakenForAHungOne(): void
     {
         // The common case at night: nothing is requested for longer than the threshold.

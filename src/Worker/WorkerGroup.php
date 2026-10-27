@@ -663,8 +663,10 @@ class WorkerGroup
             return;
         }
 
+        // A worker the watchdog stopped failed, whatever code it left with: SIGTERM usually
+        // frees the native call it hung in and it shuts down in order, with 0.
         $shouldRestart = $this->config->restartPolicy->shouldRestart(
-            cleanExit: $exitedCleanly,
+            cleanExit: $exitedCleanly && $servedSeconds === null,
             reachedLimit: $reachedLimit,
         );
 
