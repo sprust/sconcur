@@ -309,6 +309,8 @@ The crates the core is built on:
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O
   features at once.
+- [Benchmark catalog](docs/bench-catalog.md) — every benchmark, soak and profiler as a
+  file tree: how to run each and what it is for.
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 - [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
   bar it had to clear and what was measured.

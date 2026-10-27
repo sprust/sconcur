@@ -334,6 +334,8 @@ PHP:
       deadline; docblock with the cross-reference `Rust: payloads::<Type>`.
 - [ ] Public API (for streaming — returns `IteratorResult`).
 - [ ] A test from `BaseAsyncTestCase` plus edge-case tests from `BaseTestCase`.
+- [ ] (opt.) A benchmark in `tests/benchmarks/<tech>/` with a `bench-<tech>-<op>` make
+      target, and its entry in [the benchmark catalog](bench-catalog.md), both languages.
 
 Rust:
 

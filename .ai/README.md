@@ -51,7 +51,9 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [adding-a-server](../docs/adding-a-server.md),
   [value-conversion](../docs/value-conversion.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
-  [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
+  [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md),
+  [bench-catalog](../docs/bench-catalog.md) — every bench, soak and profiler as a file
+  tree with its command and purpose
 - History: [the move to Rust](../docs/rust-core.md) — the threshold the port had to
   pass and what it measured, kept as a record rather than a live comparison
 - [.ai/plans/](plans/) — detailed designs for roadmap items
@@ -419,11 +421,13 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   benches plus, for the protocols, the server benches and the load scripts), `db/`
   (a whole DB session: repeated runs and their aggregation into the markdown rows
   of `docs/benchmarks.md`),
-  `runtime/` (scheduler and the boundary, no backend involved),
-  `docs/` (`run.py`, the `bench-docs` driver) and `lib/` (the shared harness the
-  benches include). A new bench goes into its
+  `runtime/` (scheduler and the boundary, no backend involved), `worker/` (what a
+  pool of workers costs in memory), `docs/` (`run.py`, the `bench-docs` driver) and
+  `lib/` (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
-  gets a `bench-<tech>-<operation>` make target.
+  gets a `bench-<tech>-<operation>` make target. Every bench, soak and profiling
+  target is listed in [docs/bench-catalog.md](../docs/bench-catalog.md) — see the
+  workflow rule below.
 - `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP
   consumer), the counterpart of `tests/servers/`
 - `tests/mem-leak/` — memory leak soaks, each running one scenario in a loop:
@@ -665,6 +669,11 @@ against the core the run loaded, the module entry included.
 
 - Always wait for explicit user approval before committing or pushing, and always
   propose a commit message before committing.
+- Keep [docs/bench-catalog.md](../docs/bench-catalog.md) and its `.ru.md` current. A
+  change to a benchmark, a soak or a profiling tool — its script, its make target, its
+  parameters, what it measures, or a file added, renamed, moved or removed under
+  `tests/benchmarks/`, `tests/mem-leak/` or `ext/bench/` — updates the catalog in the
+  same commit, both languages.
 - Never create a git branch without an explicit, direct instruction from the user.
   Work on and commit to the current branch (normally `master`).
 - Before implementing any task, propose a plan and wait for explicit user

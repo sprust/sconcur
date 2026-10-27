@@ -311,6 +311,8 @@ $collection->insertOne(['name' => 'example']);
   (native/sync/async).
 - [Нагрузочное тестирование](docs/load-testing.ru.md) — поведение сервера под
   нагрузкой всеми I/O-фичами сразу.
+- [Каталог бенчмарков](docs/bench-catalog.ru.md) — все бенчмарки, soak-тесты и
+  профилировщики деревом файлов: как запускать каждый и для чего он.
 - [Позиционирование](docs/positioning.ru.md) — SConcur против php-fpm,
   RoadRunner и Swoole.
 - [Переезд на Rust](docs/rust-core.ru.md) — зачем ядро перенесли с Go, какой

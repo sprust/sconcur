@@ -333,6 +333,8 @@ PHP:
       докблок с перекрёстной ссылкой `Rust: payloads::<Type>`.
 - [ ] Публичный API (для стриминга — возвращает `IteratorResult`).
 - [ ] Тест от `BaseAsyncTestCase` плюс тесты граничных случаев от `BaseTestCase`.
+- [ ] (опц.) Бенчмарк в `tests/benchmarks/<tech>/` с make-целью `bench-<tech>-<op>` и его
+      запись в [каталоге бенчмарков](bench-catalog.ru.md), на обоих языках.
 
 Rust:
 
