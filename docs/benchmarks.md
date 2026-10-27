@@ -129,7 +129,9 @@ compared, and neither is by default. Placement: `load-stats.sh` defaults to
 `PIN_SERVERS=1`, one worker per logical CPU, while `rr-load-stats.sh` and
 `swoole-load-stats.sh` can only `taskset` the master and let it fork — the
 `group` placement, worth 6.5% on the empty endpoint. Every server row below runs
-`group`; [CPU pinning](load-testing.md#cpu-pinning) has the measurements. Table
+`group`, with a `php` per worker — the harness now runs the pool as forks of a worker
+master, so a re-run measures that; [CPU pinning](load-testing.md#cpu-pinning) has the
+measurements. Table
 state: `/db-rw` grows the `bench_rw` table the three stacks share, and none of
 the three load scripts empties it, so whichever stack ran later inherited a
 bigger table; `make bench-docs` truncates it before every `/db-rw` run.

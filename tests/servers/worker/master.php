@@ -15,6 +15,12 @@
  * the WorkerMaster, the way an application loads before its master: every worker is a fork
  * that begins with them loaded.
  *
+ * Two group keys set a worker apart by its slot, for the load harnesses that place the
+ * workers themselves: "slotCpus", a list of CPU lists, pins slot i to entry i (wrapping)
+ * before it starts anything, the way `taskset -c` would pin a php of its own; and
+ * "distinctPorts" gives slot i the port of the `server` address plus 1 + i and no
+ * reusePort, so a proxy in front can choose the worker.
+ *
  * Exit codes: what WorkerMaster::run() returns; 1 when it throws, the reason on stderr.
  */
 
@@ -59,16 +65,30 @@ function testMasterGroup(array $group, array $defaults): WorkerGroupConfig
 {
     $setting = static fn(string $key, mixed $default): mixed => $group[$key] ?? $defaults[$key] ?? $default;
 
-    $script = (string) $group['workerScript'];
-    $flags  = [
-        ...testMasterServerFlags((array) ($group['server'] ?? [])),
-        ...array_map(strval(...), (array) ($group['workerArgs'] ?? [])),
-    ];
+    $script        = (string) $group['workerScript'];
+    $server        = (array) ($group['server'] ?? []);
+    $workerArgs    = array_map(strval(...), (array) ($group['workerArgs'] ?? []));
+    $slotCpus      = array_values(array_map(strval(...), (array) ($group['slotCpus'] ?? [])));
+    $distinctPorts = (bool) ($group['distinctPorts'] ?? false);
 
     return new WorkerGroupConfig(
         name: (string) ($group['name'] ?? 'default'),
-        role: static function (WorkerContext $context) use ($script, $flags): void {
-            $argv = [$script, ...$flags, '--masterPid=' . $context->masterPid];
+        role: static function (WorkerContext $context) use ($script, $server, $workerArgs, $slotCpus, $distinctPorts): void {
+            // Before the server starts its runtime: the threads it starts then take the
+            // affinity of this one.
+            if ($slotCpus !== []) {
+                exec(sprintf('taskset -cp %s %d', escapeshellarg($slotCpus[$context->slot % count($slotCpus)]), getmypid()));
+            }
+
+            if ($distinctPorts) {
+                $address = (string) $server['address'];
+                $port    = (int) substr($address, (int) strrpos($address, ':') + 1);
+
+                $server['address']   = substr($address, 0, (int) strrpos($address, ':')) . ':' . ($port + 1 + $context->slot);
+                $server['reusePort'] = false;
+            }
+
+            $argv = [$script, ...testMasterServerFlags($server), ...$workerArgs, '--masterPid=' . $context->masterPid];
             $argc = count($argv);
 
             $_SERVER['argv'] = $argv;

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# All-features WebSocket load + resource benchmark. Spawns N demo ws-server processes
-# (SO_REUSEPORT, one per core) in the `php` container, drives them with the ws-load
+# All-features WebSocket load + resource benchmark. Starts a pool of N demo ws-server
+# workers (SO_REUSEPORT, one per core) under a worker master in the `php` container —
+# the master loads what the server builds on and forks the workers, each pinning itself
+# to its core (tests/benchmarks/lib/master-pool.sh) — drives them with the ws-load
 # generator (the WS counterpart of wrk) on the "all" command — which fans out across
 # EVERY async I/O feature (Sleeper, MongoDB, MySQL, PostgreSQL) concurrently per
 # message — and samples CPU/memory of the server and backend containers throughout,
@@ -18,7 +20,8 @@
 #   SERVERS=8 CONNECTIONS=256 DURATION=20 tests/benchmarks/ws/load-stats.sh
 #
 # Tunables (env): SERVERS, LOAD_CORES, CONNECTIONS, DURATION, PORT, MSG (=all),
-#   MAXCONCURRENCY, SAMPLE_INTERVAL (resource-sampling period, s), MODE (=soak).
+#   MAXCONCURRENCY, SAMPLE_INTERVAL (resource-sampling period, s), MODE (=soak),
+#   STOP_TIMEOUT (seconds the pool gets to exit after SIGTERM, default 30).
 set -euo pipefail
 
 export LC_ALL=C
@@ -47,8 +50,14 @@ MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/ws/ws-server.php
 LOADBIN=/tmp/sc-ws-load
+# The master's pid: SIGTERM to it drains the whole pool.
 PIDFILE=/tmp/sc-ws-load-$PORT.pids
 STDERRLOG=/tmp/sc-ws-load-$PORT.err
+# The pool's name: its master's directory, and the title its workers show.
+POOL=ws-load-$PORT
+
+# shellcheck source=../lib/master-pool.sh
+. tests/benchmarks/lib/master-pool.sh
 
 PHP_CID=$($DOCKER_COMPOSE ps -q php)
 [ -n "$PHP_CID" ] || { echo "php container is not running (make up)"; exit 1; }
@@ -71,19 +80,35 @@ PG_CID=$($DOCKER_COMPOSE ps -q postgres 2>/dev/null || true)
 WATCH=$(printf 'php\t%s\nmongodb\t%s\nmysql\t%s\npostgres\t%s\n' "$PHP_CID" "$MONGO_CID" "$MYSQL_CID" "$PG_CID" | awk -F'\t' '$2!=""')
 WATCH_CIDS=$(printf '%s\n' "$WATCH" | awk -F'\t' '{print $2}')
 
+# SIGTERM to the master, which drains its workers and leaves after them; waited for, so
+# the next run does not find this pool still on the port. One still there after
+# STOP_TIMEOUT seconds is killed, and its workers leave once they see it gone.
+STOP_TIMEOUT=${STOP_TIMEOUT:-30}
+
 stop_servers() {
     $DOCKER_COMPOSE exec -T php sh -c '
         [ -f "'"$PIDFILE"'" ] || exit 0
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "'"$PIDFILE"'"
+        pid=$(cat "'"$PIDFILE"'")
+        kill "$pid" 2>/dev/null || true
+        waited=0
+        while [ -d "/proc/$pid" ] && ! grep -q "^State:.*Z" "/proc/$pid/status" 2>/dev/null; do
+            if [ "$waited" -ge '"$STOP_TIMEOUT"' ]; then
+                echo "WARNING: master $pid still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
+                kill -9 "$pid" 2>/dev/null || true
+                break
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+        done
         rm -f "'"$PIDFILE"'"
-    ' 2>/dev/null || true
+    ' || true
 }
 trap stop_servers EXIT
 
 echo "=================================================================="
 echo " All-features WebSocket load + resource benchmark${MODE:+  [$MODE]}"
 echo "   container cores : $CORES"
-echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort)"
+echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort, forks of a master)"
 echo "   load generator  : pinned to cores $LOAD_CPULIST"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"
@@ -92,6 +117,7 @@ echo "   target          : ws://127.0.0.1:$PORT/  (loopback in the php container
 echo "=================================================================="
 
 stop_servers
+master_pool_kill_stray "$POOL"
 
 # The load generator, built once before the run: wrk speaks HTTP only, so the WS
 # side needs one of its own (ws-load/, a crate separate from the core so that
@@ -102,18 +128,11 @@ $DOCKER_COMPOSE exec -T php sh -c '
         && cp target/release/ws-load "'"$LOADBIN"'"
 ' || { echo "could not build the WS load generator" >&2; exit 2; }
 
-$DOCKER_COMPOSE exec -T php sh -c '
-    : > "'"$PIDFILE"'"
-    : > "'"$STDERRLOG"'"
-    i=0
-    while [ "$i" -lt "'"$SERVERS"'" ]; do
-        taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:'"$PORT"' --reusePort=1 --maxConcurrency='"$MAXCONCURRENCY"' \
-            >/dev/null 2>>"'"$STDERRLOG"'" &
-        echo $! >> "'"$PIDFILE"'"
-        i=$(( i + 1 ))
-    done
-'
+POOL_MAX_CONCURRENCY=$MAXCONCURRENCY POOL_SLOT_CPUS=$(seq -s ' ' 0 $(( SERVERS - 1 ))) \
+    master_pool_start "$POOL" "$SCRIPT" "$SERVERS" "0.0.0.0:$PORT" "$PIDFILE" "$STDERRLOG"
+
+# The pids whose memory is summed: the workers, by their title.
+WORKER_PIDS=$(master_pool_worker_pids "$POOL")
 
 # Wait until the pool accepts TCP, then a short warm-up run triggers the lazy per-worker
 # DB connects (so the measured run is not skewed by cold start).
@@ -125,6 +144,7 @@ done
 if (( ready != 1 )); then
     echo "ws server pool did not become reachable on 127.0.0.1:$PORT" >&2
     $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$STDERRLOG"'" 2>/dev/null' >&2 || true
+    master_pool_journal_tail "$POOL"
     exit 1
 fi
 
@@ -146,10 +166,10 @@ SAMPLE_START=$(date +%s)
         elapsed=$(( $(date +%s) - SAMPLE_START ))
         total_kb=$($DOCKER_COMPOSE exec -T php sh -c '
             total=0
-            while read -r pid; do
+            for pid in $('"$WORKER_PIDS"'); do
                 kb=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null)
                 [ -n "$kb" ] && total=$(( total + kb ))
-            done < "'"$PIDFILE"'"
+            done
             echo "$total"
         ' 2>/dev/null | tr -d "[:space:]") || true
         [ -n "$total_kb" ] && echo "$elapsed $total_kb" >> "$RSS"

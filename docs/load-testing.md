@@ -19,9 +19,9 @@ Tools:
   so the only concurrency left is between different requests. Run it via
   `ROUTE=/all-nowg tests/benchmarks/http/load-stats.sh`;
 - `tests/benchmarks/http/load-stats.sh` (`make bench-http-load-stats`) — brings up
-  a pool of servers (`SO_REUSEPORT`, one process per core), runs `wrk`, and during
-  the run samples `docker stats` (CPU%/MEM for the server and DB containers) plus
-  the aggregate worker RSS from `/proc/<pid>/status` (leak detection);
+  a pool of servers under a worker master (`SO_REUSEPORT`, one worker per core), runs
+  `wrk`, and during the run samples `docker stats` (CPU%/MEM for the server and DB
+  containers) plus the aggregate worker RSS from `/proc/<pid>/status` (leak detection);
 - `rr-load-stats.sh` and `swoole-load-stats.sh` (`make bench-rr-load-stats` /
   `make bench-swoole-load-stats`) — the same test rig against the RoadRunner and
   Swoole reference stacks on native drivers, with `ROUTE=/all-coro`
@@ -45,23 +45,21 @@ make bench-http-load-stats-empty
 # soak mode: a long run with an RSS trend and slope (MiB/min) for slow-leak detection
 make bench-http-load-soak               # 10 minutes by default
 DURATION=3600 make bench-http-load-soak # hour-long soak
-
-# the pool as a php per worker rather than through a worker master
-LAUNCH=exec make bench-http-load-stats-empty
 ```
 
-`LAUNCH` says how the pool starts. `exec`, the script's default, runs a `php` of its own
-per worker. `master` runs the pool the way production runs it: a
-[worker master](worker-master.md) (`tests/servers/http/load-master.php`) loads what the
-demo server builds on, then forks `SERVERS` workers onto the port, their role the demo
-server; `make bench-http-load-stats-empty` uses it unless told otherwise. Under a
-master the workers are forks of one process: they share its placement, so it takes
-`PIN_SERVERS=0` or `group` (the master itself is put on the cores), and neither
-`DISTINCT_PORTS` nor `WORKER_LOGS`. Their access lines are off, as an exec'd worker's go
-to `/dev/null`; the worker RSS is summed over the workers found by their title, read
-afresh at every sample, so a worker that was replaced is not lost.
+The pool runs the way production runs it: a [worker master](worker-master.md) loads
+what the demo server builds on (`tests/servers/preload.php`), then forks `SERVERS`
+workers onto the port, their role the demo server (`tests/benchmarks/lib/master-pool.sh`
+starts it through `tests/servers/worker/master.php`). `throughput.sh` and the WebSocket
+harness start their pools the same way. Under `PIN_SERVERS=group` the master is put on
+the cores and its forks inherit the mask; under `1` and `physical` each worker pins
+itself to its CPUs as it starts, before its runtime does. `DISTINCT_PORTS=1` gives
+worker `i` the port `PORT+1+i` without `SO_REUSEPORT`; `WORKER_LOGS=1` turns on the
+group's access file, whose lines carry the worker's slot, and the spread is counted from
+it. Otherwise access lines are off. The worker RSS is summed over the workers found by
+their title, read afresh at every sample, so a worker that was replaced is not lost.
 
-`MODE=soak` additionally prints a `trend (elapsed → RSS)` table, and the
+`MODE=soak` additionally prints a `trend (elapsed -> RSS)` table, and the
 least-squares slope in MiB/min gets a verdict: `stable` / `growing — possible leak` /
 `falling (GC / memory returned)`. A short run prints the slope without a verdict:
 its first RSS sample is taken before the load starts, so the slope over 20 s is
@@ -95,7 +93,7 @@ worth about 6.5% on the empty endpoint.
 
 | `PIN_SERVERS` | placement |
 |---|---|
-| `1` (default) | one logical CPU per worker — `taskset -c $i` |
+| `1` (default) | one logical CPU per worker — the worker runs `taskset -cp $i` on itself |
 | `physical` | one physical core per worker: the whole sibling pair, read from `/sys/devices/system/cpu/cpuN/topology/thread_siblings_list` |
 | `group` | the pool confined to the budget, the scheduler placing workers inside it |
 | `0` | unpinned, the way the worker master actually runs them |
@@ -106,8 +104,9 @@ PIN_SERVERS=group ROUTE=/ tests/benchmarks/http/load-stats.sh
 
 ### What was measured, and why the library has no pinning option
 
-The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
-12–15, median of three interleaved rounds of 20 s:
+The empty endpoint, 12 workers (a `php` per worker, as the harness ran pools then), the
+same `cpu0-11` budget in every arm, `wrk` on 12–15, median of three interleaved rounds
+of 20 s:
 
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
@@ -132,7 +131,7 @@ behaviour — `WorkerMaster` pins nothing — is the measured optimum.
 
 Confining a pool to part of a machine does not need one either. `group` is what a
 mask on the master gives you for free, because the workers inherit it:
-`taskset -c 0-11 sconcur-server …`, or `--cpuset-cpus` on the container, or
+`taskset -c 0-11 php app.php`, where `app.php` builds and runs the master, or `--cpuset-cpus` on the container, or
 `CPUAffinity=` in the unit. The placements that would need per-worker support
 from the library are `1` and `physical`, and those are the two that measured
 worse.
@@ -157,8 +156,8 @@ builds one runtime thread regardless of the core count, and
 `SCONCUR_RUNTIME_THREADS` raises it for a process that wants the extension on
 more than one core.
 
-The wider consequence: every figure in [benchmarks](benchmarks.md) is taken with
-pinning, and production does not pin. For comparing stacks against each other that
+The wider consequence: every server-load figure in [benchmarks](benchmarks.md) is
+taken with pinning, and production does not pin. For comparing stacks against each other that
 is the correct methodology, but it is not the configuration the library runs in,
 and the difference is not zero. Comparisons are only valid between runs with the
 same `PIN_SERVERS`.
@@ -167,7 +166,8 @@ same `PIN_SERVERS`.
 
 An Intel i7-13620H laptop (16 threads) on the Performance power profile,
 services in Docker on disk-backed volumes, 12 servers / 4 wrk cores, 256 connections, 20 s, `PIN_SERVERS=group`,
-a `php` per worker (`LAUNCH=exec make bench-http-load-stats-empty` reproduces it).
+a `php` per worker, as the harness ran pools before it ran them under a master
+(`make bench-http-load-stats-empty` now runs the same parameters through one).
 `/` responds `ok` with no I/O and no noticeable
 CPU — the ceiling of the HTTP-server + framework pairing, and the floor on top
 of which the cost of the `/all` feature calls is added.
@@ -189,8 +189,9 @@ empty endpoint has none of it and is CPU-bound at ~1200 %.
 
 ## Reference run
 
-Same machine and parameters, `wrk` against `/all` — 6 DB operations in three
-feature blocks running at the same time, 3 of them disk writes.
+Same machine and parameters (`PIN_SERVERS=group make bench-http-load-stats`), `wrk`
+against `/all` — 6 DB operations in three feature blocks running at the same time, 3 of
+them disk writes.
 
 | Metric | Value |
 |---|---|

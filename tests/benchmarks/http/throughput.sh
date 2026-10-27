@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# SO_REUSEPORT throughput benchmark: spawn one demo HTTP-server process per core
+# SO_REUSEPORT throughput benchmark: start one demo HTTP-server worker per core
 # (all binding the same port with SO_REUSEPORT, the kernel load-balancing across
-# them) inside the `php` container, then drive them with wrk from the host.
+# them) under a worker master inside the `php` container — the master loads what the
+# server builds on and forks the workers (tests/benchmarks/lib/master-pool.sh) — then
+# drive them with wrk from the host.
 #
 # Why this setup gives an honest number:
 #   * Servers and the load generator are pinned to DISJOINT core sets (taskset),
@@ -21,17 +23,18 @@
 #       tests/benchmarks/http/throughput.sh
 #
 # Tunables (env vars):
-#   SERVERS       server processes / cores to use            (default: cores - WRK_THREADS)
+#   SERVERS       workers / cores to use                      (default: cores - WRK_THREADS)
 #   WRK_THREADS   wrk threads / cores reserved for the client (default: 4)
 #   CONNECTIONS   total keep-alive connections wrk opens       (default: 256)
-#   STOP_TIMEOUT  seconds a server gets to exit after SIGTERM  (default: 30)
+#   STOP_TIMEOUT  seconds the pool gets to exit after SIGTERM  (default: 30)
 #   DURATION      load duration, seconds                       (default: 15)
 #   PORT          in-container listen port                     (default: 18080)
 #   ROUTE         path to hit                                  (default: /)
-#   MAXCONCURRENCY per-process maxConcurrency (0 = unlimited)  (default: 0)
-#   PIN_SERVERS   1 = pin each server to its own core (process-per-core, like
-#                 nginx workers); 0 = leave them unpinned so each process's
-#                 runtime may spread across cores                (default: 1)
+#   MAXCONCURRENCY per-worker maxConcurrency (0 = unlimited)   (default: 0)
+#   PIN_SERVERS   1 = pin each worker to its own core (process-per-core, like
+#                 nginx workers; the worker pins itself before its runtime
+#                 starts); 0 = leave them unpinned so each worker's runtime
+#                 may spread across cores                        (default: 1)
 #
 set -euo pipefail
 
@@ -48,11 +51,16 @@ PIN_SERVERS=${PIN_SERVERS:-1}
 
 EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
-# The container has no procps (pkill/pgrep), so the spawn loop records each PID to
-# this file and teardown/liveness use plain kill / kill -0 (shell builtins).
+# The master's PID: SIGTERM to it drains the whole pool. The container has no procps
+# (pkill/pgrep), so teardown uses plain kill (a shell builtin).
 PIDFILE=/tmp/sc-http-throughput-$PORT.pids
-# Server stderr is collected here so a failed startup can be diagnosed.
+# What the master writes to stderr before its journal is open.
 STDERRLOG=/tmp/sc-http-throughput-$PORT.err
+# The pool's name: its master's directory, and the title its workers show.
+POOL=throughput-$PORT
+
+# shellcheck source=../lib/master-pool.sh
+. tests/benchmarks/lib/master-pool.sh
 
 command -v wrk >/dev/null || { echo "wrk not found on host (install it: apt-get install wrk)"; exit 1; }
 
@@ -73,11 +81,12 @@ CID=$($DOCKER_COMPOSE ps -q php)
 IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID")
 [ -n "$IP" ] || { echo "could not resolve php container IP"; exit 1; }
 
-# SIGTERM first, the way production stops a worker, and then wait for it to go.
-# One still there after STOP_TIMEOUT seconds is killed and named on stderr: a
-# worker that survives its SIGTERM keeps its SO_REUSEPORT socket and quietly
-# takes a share of the next run's traffic, and once the next run has rewritten
-# the pidfile nothing would stop it any more. A zombie counts as gone.
+# SIGTERM to the master first, the way production stops a pool, and then wait for
+# it to go: it drains its workers and leaves after them. One still there after
+# STOP_TIMEOUT seconds is killed and named on stderr; its workers see their master
+# gone and leave on their own, and a worker that did not would keep its
+# SO_REUSEPORT socket and take a share of the next run's traffic — which is what
+# kill_stray at the next start is for. A zombie counts as gone.
 STOP_TIMEOUT=${STOP_TIMEOUT:-30}
 
 stop_servers() {
@@ -95,7 +104,7 @@ stop_servers() {
             done
             [ -z "$alive" ] && break
             if [ "$waited" -ge '"$STOP_TIMEOUT"' ]; then
-                echo "WARNING: worker(s)$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
+                echo "WARNING: master$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
                 for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
                 break
             fi
@@ -106,23 +115,10 @@ stop_servers() {
     ' || true
 }
 
-# Kills any demo server still bound to this port, including ones leaked by an
-# earlier interrupted run (whose PID never made it into the pidfile). No procps in
-# the container, so scan /proc; the glob is expanded once, so transient greps are
-# not in the list, and the scanning shell itself ($$) is skipped so it cannot kill
-# itself (its own cmdline contains the match string).
+# Kills a master or worker of this pool leaked by an earlier interrupted run (whose
+# PID never made it into the pidfile).
 kill_stray() {
-    $DOCKER_COMPOSE exec -T php sh -c '
-        self=$$
-        for d in /proc/[0-9]*; do
-            pid=${d#/proc/}
-            [ "$pid" = "$self" ] && continue
-            [ -r "$d/cmdline" ] || continue
-            if grep -qa "address=0.0.0.0:'"$PORT"'" "$d/cmdline" 2>/dev/null; then
-                kill "$pid" 2>/dev/null || true
-            fi
-        done
-    ' 2>/dev/null || true
+    master_pool_kill_stray "$POOL"
 }
 
 trap stop_servers EXIT
@@ -131,41 +127,30 @@ echo "=================================================================="
 echo " SO_REUSEPORT throughput benchmark"
 echo "   host cores      : $CORES"
 if [ "$PIN_SERVERS" = "1" ]; then
-    echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort)"
+    echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort, forks of a master)"
 else
-    echo "   server procs    : $SERVERS  (unpinned, reusePort)"
+    echo "   workers         : $SERVERS  (unpinned, reusePort, forks of a master)"
 fi
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s"
-echo "   maxConcurrency  : $MAXCONCURRENCY (per process)"
+echo "   maxConcurrency  : $MAXCONCURRENCY (per worker)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
 
-# Clear any leftovers on this port — both cleanly-tracked (pidfile) and leaked from
-# an interrupted run — so new servers do not contend with zombies, then spawn one
-# per core, recording each PID. The spawn uses a SYNCHRONOUS exec (not -d): the
-# loop backgrounds each server and the exec returns once the loop finished, so the
-# pidfile is fully written before we proceed (detached -d ran unreliably). The
-# backgrounded servers outlive the exec's shell (reparented to the container init).
-# taskset execs into php (same PID), so the recorded PID is the server itself;
-# server stderr goes to $STDERRLOG for diagnosis.
+# Clear any leftovers of this pool — both cleanly-tracked (pidfile) and leaked from
+# an interrupted run — so new workers do not contend with old ones, then start the
+# master, which forks one worker per core.
 stop_servers
 kill_stray
 
-$DOCKER_COMPOSE exec -T php sh -c '
-    : > "'"$PIDFILE"'"
-    : > "'"$STDERRLOG"'"
-    i=0
-    while [ "$i" -lt "'"$SERVERS"'" ]; do
-        if [ "'"$PIN_SERVERS"'" = "1" ]; then pin="taskset -c $i"; else pin=""; fi
-        $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:'"$PORT"' --reusePort=1 --maxConcurrency='"$MAXCONCURRENCY"' \
-            >/dev/null 2>>"'"$STDERRLOG"'" &
-        echo $! >> "'"$PIDFILE"'"
-        i=$(( i + 1 ))
-    done
-'
+POOL_SLOT_CPUS=""
+[ "$PIN_SERVERS" = "1" ] && POOL_SLOT_CPUS=$(seq -s ' ' 0 $(( SERVERS - 1 )))
+
+POOL_MAX_CONCURRENCY=$MAXCONCURRENCY POOL_SLOT_CPUS=$POOL_SLOT_CPUS \
+    master_pool_start "$POOL" "$SCRIPT" "$SERVERS" "0.0.0.0:$PORT" "$PIDFILE" "$STDERRLOG"
+
+WORKER_PIDS=$(master_pool_worker_pids "$POOL")
 
 # Wait until the port answers from the host (via the container IP); 15s budget.
 ready=0
@@ -179,23 +164,16 @@ done
 
 if (( ready != 1 )); then
     echo "servers did not become reachable on $IP:$PORT" >&2
-    alive=$($DOCKER_COMPOSE exec -T php sh -c '
-        n=0
-        while read -r pid; do kill -0 "$pid" 2>/dev/null && n=$(( n + 1 )); done < "'"$PIDFILE"'" 2>/dev/null
-        echo "$n"
-    ' | tr -d '[:space:]')
-    echo "  alive server procs: ${alive:-0}/$SERVERS" >&2
-    echo "  --- server stderr (last 20 lines) ---" >&2
+    alive=$($DOCKER_COMPOSE exec -T php sh -c '('"$WORKER_PIDS"') | wc -l' | tr -d '[:space:]')
+    echo "  alive workers: ${alive:-0}/$SERVERS" >&2
+    echo "  --- master stderr and journal (last 20 lines) ---" >&2
     $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$STDERRLOG"'" 2>/dev/null' >&2 || true
+    master_pool_journal_tail "$POOL"
     exit 1
 fi
 
-alive=$($DOCKER_COMPOSE exec -T php sh -c '
-    n=0
-    while read -r pid; do kill -0 "$pid" 2>/dev/null && n=$(( n + 1 )); done < "'"$PIDFILE"'"
-    echo "$n"
-' | tr -d '[:space:]')
-echo "servers up: $alive/$SERVERS"
+alive=$($DOCKER_COMPOSE exec -T php sh -c '('"$WORKER_PIDS"') | wc -l' | tr -d '[:space:]')
+echo "workers up: $alive/$SERVERS"
 echo
 
 taskset -c "$WRK_CPULIST" wrk \

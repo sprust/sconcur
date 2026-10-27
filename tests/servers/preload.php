@@ -1,14 +1,10 @@
 <?php
 
 /**
- * The demo HTTP server under a worker master, the way an application runs in production:
- * what the server builds on is loaded once here, before the master starts, and every
- * worker is a fork that starts with it in memory. The workers then run
- * tests/servers/http/http-server.php as their role (tests/servers/worker/master.php).
- *
- * Used by tests/benchmarks/http/load-stats.sh with LAUNCH=master.
- *
- * Usage: php -d extension=sconcur.so tests/servers/http/load-master.php <config.json>
+ * What the demo servers build on, loaded once in a worker master before it starts, the way
+ * an application loads before its master: every worker is a fork that starts with it in
+ * memory. The load harnesses name it in the "preload" of the master's config
+ * (tests/servers/worker/master.php).
  */
 
 declare(strict_types=1);
@@ -20,10 +16,11 @@ use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Features\WsServer\WsServer;
 use SConcur\Scheduler\Scheduler;
 use SConcur\WaitGroup;
 
-require dirname(__DIR__, 3) . '/vendor/autoload.php';
+require_once dirname(__DIR__, 2) . '/vendor/autoload.php';
 
 // Loaded, not used: a class is compiled when the autoloader finds it, and a class
 // compiled before the fork is one every worker shares instead of compiling its own copy.
@@ -31,6 +28,7 @@ require dirname(__DIR__, 3) . '/vendor/autoload.php';
 foreach (
     [
         HttpServer::class,
+        WsServer::class,
         Psr17Factory::class,
         Scheduler::class,
         WaitGroup::class,
@@ -43,5 +41,3 @@ foreach (
 ) {
     class_exists($class);
 }
-
-require dirname(__DIR__) . '/worker/master.php';

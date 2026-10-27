@@ -643,8 +643,9 @@ bench-ws-server-io:
 bench-ws-server-cpu:
 	$(PHP_CLI) php tests/benchmarks/ws/server-cpu.php
 
-# Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
-# php container, wrk pinned to separate cores, hitting the container IP (no NAT).
+# Runs on the HOST (needs wrk): one worker per core with SO_REUSEPORT inside the
+# php container, forks of a worker master, wrk pinned to separate cores, hitting the
+# container IP (no NAT).
 # Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
 bench-http-throughput:
 	tests/benchmarks/http/throughput.sh
@@ -709,15 +710,11 @@ bench-worker-memory-soak:
 
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
-# The pool runs the way production runs it: a worker master that loaded the
-# server's code first and forks the workers (LAUNCH=master). Placement defaults to
-# group, the one the docs/benchmarks.md numbers are taken with: the harness's own
-# default (1) runs ~6.5% slower on this route (the pinning section of
-# docs/load-testing.md), which reads as a regression next to them. Those numbers
-# were taken with a php per worker, which LAUNCH=exec reproduces; per-worker pinning
-# (PIN_SERVERS=1) needs it too.
+# Placement defaults to group, the one the docs/benchmarks.md numbers are taken
+# with: the harness's own default (1) runs ~6.5% slower on this route (the pinning
+# section of docs/load-testing.md), which reads as a regression next to them.
 bench-http-load-stats-empty:
-	ROUTE=/ LAUNCH=$${LAUNCH:-master} PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
+	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
 # Response-size variant: the same harness against /big/N, whose handler answers N
 # bytes and does no I/O. It is what /  and /all cannot see — everything they
@@ -775,7 +772,8 @@ bench-swoole-load-soak:
 bench-swoole-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/swoole-load-stats.sh
 
-# WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
+# WebSocket load test: start a ws-server pool under a worker master (SO_REUSEPORT, one
+# worker per core) and drive
 # it with the ws-load generator (a Rust crate, tests/benchmarks/ws/ws-load) on the
 # "all" message (fans out across EVERY async I/O feature per message), sampling
 # CPU/memory + per-worker RSS (leak check). Both
