@@ -623,6 +623,14 @@ class WorkerGroup
             lines: $process->drainFinalOutput(),
         );
 
+        // Read again now that the worker is reaped: the tick read the pipe before asking
+        // whether it was running, and a worker that said Ready or Recycling and exited in
+        // between left the mark there. Missed, a worker at its limit would be taken for one
+        // that finished its job, and one that came up for one that failed to start.
+        $process->drainHeartbeat();
+
+        $this->noteCameUp($process);
+
         $pid           = $process->pid();
         $uptimeSeconds = $process->uptimeSeconds();
         $exitedCleanly = $process->exitedCleanly();
