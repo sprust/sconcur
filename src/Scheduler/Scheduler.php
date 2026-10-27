@@ -789,6 +789,12 @@ class Scheduler
      *                                                                 process does not leave while one is being
      *                                                                 written. What arrives meanwhile is handled,
      *                                                                 since a connection waits for its answer
+     * @param null|Closure(): ?string             $limitReached        a life limit of the caller's own besides
+     *                                                                 $maxRequests (the consumer's runtime and
+     *                                                                 memory): the limit it reached, as it goes
+     *                                                                 into the shutdown line, or null. Its stop is
+     *                                                                 a stop at a limit, so the master is told the
+     *                                                                 same as at $maxRequests
      */
     public function serve(
         string $serverFlowKey,
@@ -801,6 +807,7 @@ class Scheduler
         int $preemptionQuantumMs = 0,
         int $handlerTimeoutMs = 0,
         bool $drainsToStreamEnd = false,
+        ?Closure $limitReached = null,
     ): void {
         // Screened here rather than at the first request: the servers take it from argv,
         // where a negative one is only a typo, and the extension side clamps it to zero. Left to
@@ -829,19 +836,25 @@ class Scheduler
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                $limitReached = $limit > 0 && $dispatchedCount >= $limit;
+                $reachedLimit = null;
 
-                if (!$draining && ($shouldStop() || $limitReached)) {
+                if (!$draining) {
+                    $reachedLimit = $limit > 0 && $dispatchedCount >= $limit
+                        ? sprintf('limit=%d', $limit)
+                        : $limitReached?->__invoke();
+                }
+
+                if (!$draining && ($reachedLimit !== null || $shouldStop())) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
                     $lastDrainDiagnosticAt = microtime(true);
 
                     $onShutdownStep(
-                        $limitReached
+                        $reachedLimit !== null
                             ? sprintf(
-                                'stop accepting (reason=limit, limit=%d), draining %d in-flight',
-                                $limit,
+                                'stop accepting (reason=limit, %s), draining %d in-flight',
+                                $reachedLimit,
                                 $this->spawnedCount,
                             )
                             : sprintf('stop accepting (reason=signal), draining %d in-flight', $this->spawnedCount),
@@ -849,7 +862,7 @@ class Scheduler
 
                     // Said before the drain rather than at the exit: the master brings the
                     // replacement up while this one is still finishing its last requests.
-                    if ($limitReached) {
+                    if ($reachedLimit !== null) {
                         static::markHeartbeat(HeartbeatMarkEnum::Recycling);
                     }
 

@@ -290,6 +290,11 @@ master:
   apart, and further with each generation. The number drawn is in the worker's
   shutdown line: `stop accepting (reason=limit, limit=12408), draining 3 in-flight`.
 
+The consumer's `maxRuntimeSeconds` and `maxMemoryBytes` are limits of the same kind: a
+worker that stops at one says so, and the master replaces it under `OnFailure` too. They
+are not spread, and the shutdown line names the one reached:
+`stop accepting (reason=limit, maxRuntimeSeconds=3600), draining 1 in-flight`.
+
 Without a master the limit is exact: a one-off consumer told to take `maxMessages: 100`
 takes 100.
 

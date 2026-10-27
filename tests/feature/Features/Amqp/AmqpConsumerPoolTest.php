@@ -122,6 +122,63 @@ class AmqpConsumerPoolTest extends AmqpTestCase
     }
 
     /**
+     * maxRuntimeSeconds is a life limit like maxMessages: the worker that reaches it says
+     * so, and under OnFailure the master replaces it rather than taking its clean exit
+     * for the end of the job.
+     */
+    public function testAConsumerAtItsRuntimeLimitIsReplacedUnderOnFailure(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'one');
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'groups' => [
+                    [
+                        'name'         => 'consumers',
+                        'workerScript' => self::consumerScript(),
+                        'workerCount'  => 1,
+                        'server'       => [
+                            'queues'            => [['name' => $queue->name()]],
+                            'maxRuntimeSeconds' => 1,
+                        ],
+                    ],
+                ],
+                'restartPolicy' => 'on-failure',
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            $this->waitForHandledLines($master, expected: 1);
+
+            self::assertTrue(
+                $this->waitForLine($master, 'stop accepting (reason=limit, maxRuntimeSeconds=1)'),
+                'the worker must stop at its runtime limit: ' . $master->logText(),
+            );
+
+            self::assertTrue(
+                $this->waitForLine($master, 'its limit;'),
+                'the master must replace a worker that stopped at its limit: ' . $master->logText(),
+            );
+
+            self::assertStringNotContainsString('not restarting', $master->logText());
+
+            $this->publishToQueue($channel, $queue->name(), 'two');
+
+            self::assertSame(
+                ['handled one', 'handled two'],
+                $this->waitForHandledLines($master, expected: 2),
+            );
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
      * The delayed-retry shape the demo worker implements: a job that fails comes back after
      * a wait that grows with the attempt, and the wait happens on the broker — the worker
      * acknowledges the failed delivery and is free while the job is away.

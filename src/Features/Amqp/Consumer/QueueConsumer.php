@@ -270,8 +270,8 @@ class QueueConsumer
                             handled: $handled,
                         );
                     },
-                    shouldStop: function () use ($stopRequest, $startedAt): bool {
-                        return $stopRequest->isRequested() || $this->limitReached($startedAt);
+                    shouldStop: static function () use ($stopRequest): bool {
+                        return $stopRequest->isRequested();
                     },
                     onDrainStart: static function () use ($flowKey): void {
                         // Cancel the consumers and keep their channels: the handlers still
@@ -284,6 +284,9 @@ class QueueConsumer
                     },
                     preemptionQuantumMs: $this->preemptionQuantumMs,
                     handlerTimeoutMs: 0,
+                    limitReached: function () use ($startedAt): ?string {
+                        return $this->limitReached($startedAt);
+                    },
                 );
             } catch (TaskErrorException $exception) {
                 throw AmqpFailure::translate(
@@ -656,14 +659,22 @@ class QueueConsumer
         );
     }
 
-    /** Whether a life limit says this worker has done its shift. */
-    protected function limitReached(float $startedAt): bool
+    /**
+     * The life limit that says this worker has done its shift, as the shutdown line names
+     * it, or null. A stop at one is a stop at a limit like maxMessages, so a master
+     * replaces the worker even under OnFailure.
+     */
+    protected function limitReached(float $startedAt): ?string
     {
         if ($this->maxRuntimeSeconds > 0 && (microtime(true) - $startedAt) >= $this->maxRuntimeSeconds) {
-            return true;
+            return sprintf('maxRuntimeSeconds=%d', $this->maxRuntimeSeconds);
         }
 
-        return $this->maxMemoryBytes > 0 && memory_get_usage() >= $this->maxMemoryBytes;
+        if ($this->maxMemoryBytes > 0 && memory_get_usage() >= $this->maxMemoryBytes) {
+            return sprintf('maxMemoryBytes=%d', $this->maxMemoryBytes);
+        }
+
+        return null;
     }
 
     /**
