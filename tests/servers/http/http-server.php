@@ -91,6 +91,21 @@ const RABBITMQ_MAX_JOBS = 100000;
  * normal server (see runLadderServer below).
  */
 
+// A test of the master's restart backoff hands its workers a plan, a line per start, in
+// the file SCONCUR_TEST_START_PLAN names: a start that takes "crash" exits at once with an
+// error, any other line (or an empty plan) serves. One worker at a time takes from it.
+$startPlan = (string) getenv('SCONCUR_TEST_START_PLAN');
+
+if ($startPlan !== '') {
+    $steps = file($startPlan, FILE_IGNORE_NEW_LINES) ?: [];
+
+    file_put_contents($startPlan, implode('', array_map(static fn(string $step): string => $step . PHP_EOL, array_slice($steps, 1))));
+
+    if (($steps[0] ?? '') === 'crash') {
+        exit(1);
+    }
+}
+
 // Attribution-ladder bench modes: --ladder=l1 answers every request 200 "ok"
 // inline from the loop (no
 // Fiber), --ladder=l2 answers the same from a fresh Fiber per request. Both talk

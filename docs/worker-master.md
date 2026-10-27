@@ -292,7 +292,18 @@ takes 100.
 Crash-loop protection: a worker that crashes right at startup gets a per-slot
 exponential backoff (base `restartBackoffMs`, doubled on each fast crash, ceiling
 `maxRestartBackoffMs`). A worker that has lived longer than ~1 s is considered
-healthy and the backoff is reset.
+healthy and the backoff is reset. So is one that reached its limit, however short it
+lived: it served, and the crashes at start before it do not lengthen the wait after the
+next one.
+
+A worker that dies in the middle of its work — `exit()` in a handler, a fatal error, the
+OOM killer — takes with it the requests it had accepted. And every worker accepts on a
+socket of its own, so the connections the kernel had queued on that socket are reset with
+it. With `net.ipv4.tcp_migrate_req` set to `1` (Linux 5.14+, off by default) the kernel
+hands that queue to the sockets of the other workers instead. In the failure soak
+(`make mem-leak-worker scenario=exit`: 4 workers, `exit()` twice a second, 8 requests in
+flight) a death cost 1.17 requests with it off and 0.82 with it on; what the worker had
+accepted is lost either way.
 
 ## A group that never comes up
 
@@ -613,14 +624,15 @@ N workers, restarting a killed one, self-exit on `maxRequests` → restart, the 
 and `Never` policies), a group that never comes up (exit `70`), stopping (graceful
 shutdown on `SIGTERM` and on removal of the state file, a response still being written,
 a client that connected before the stop), singleness and state (rejection of a second
-instance, `status`/`stop`, `status` after a crash), resilience (crash-loop backoff,
-orphan self-termination), the logger (line format, context JSON, daily rotation) and the
-access lines (`File` and `Off`). `AppBeforeMasterTest` loads an application before the
-master and checks that a replaced worker finds it in memory without loading it again,
-and that what it opened stays with the worker but reaches no program the worker starts.
-`WorkerDescriptorsTest` checks that a program a worker starts gets its stdio and nothing
-else, `ForkedWorkerTest` that `exit()` in a worker stops its server, and
-`ProcessControlTest` that an asynchronous call in the master's process is refused.
+instance, `status`/`stop`, `status` after a crash), resilience (crash-loop backoff and
+its reset by a worker that reached its limit, orphan self-termination), the logger (line
+format, context JSON, daily rotation) and the access lines (`File` and `Off`).
+`AppBeforeMasterTest` loads an application before the master and checks that a replaced
+worker finds it in memory without loading it again, and that what it opened stays with
+the worker but reaches no program the worker starts. `WorkerDescriptorsTest` checks that
+a program a worker starts gets its stdio and nothing else, `ForkedWorkerTest` that
+`exit()` in a worker stops its server, and `ProcessControlTest` that an asynchronous call
+in the master's process is refused.
 
 ---
 

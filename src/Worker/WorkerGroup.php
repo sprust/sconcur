@@ -419,6 +419,10 @@ class WorkerGroup
 
         $this->slots[$index] = null;
 
+        // It served up to its limit: whatever failed in this slot before it is over, and
+        // its replacement crashing starts the backoff afresh.
+        $this->fastFails[$index] = 0;
+
         $this->forgetWatchdog($index);
 
         $this->drain(
@@ -685,6 +689,7 @@ class WorkerGroup
         // then; this is the one that said so and exited within the same tick.
         if ($reachedLimit) {
             $this->respawnAtNs[$index] = hrtime(true);
+            $this->fastFails[$index]   = 0;
 
             $this->logWorker(
                 level: MasterLogger::INFO,

@@ -842,6 +842,57 @@ class WorkerMasterTest extends TestCase
     }
 
     /**
+     * A worker that left at its maxRequests limit served: the crashes in its slot before it
+     * do not make its replacement's crash wait longer. Crashes at start, a worker that
+     * serves, then one more crash: it waits the first backoff, not the fifth.
+     */
+    public function testAWorkerAtItsLimitResetsItsSlotsBackoff(): void
+    {
+        $plan = (string) tempnam(sys_get_temp_dir(), 'sc-start-plan-');
+
+        // The first serves, so the group comes up and a crash is not a failure to start.
+        file_put_contents($plan, implode(PHP_EOL, ['serve', 'crash', 'crash', 'crash', 'crash', 'serve', 'crash', 'serve']) . PHP_EOL);
+
+        $master = TestWorkerMaster::start(
+            options: ['workerCount' => 1, 'restartBackoffMs' => 50],
+            env: ['SCONCUR_TEST_START_PLAN' => $plan],
+            workerArgs: ['--maxRequests=1'],
+        );
+
+        $restarts = static fn(): array => preg_match_all('~restarting in (\d+)ms~', $master->logText(), $matches) > 0
+            ? array_map(intval(...), $matches[1])
+            : [];
+
+        // The request start() made to see the master up was the first worker's one.
+        try {
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => count($restarts()) >= 4, timeoutSeconds: 6.0),
+                'four crashes at start: ' . $master->logText(),
+            );
+
+            $crashes = $restarts();
+
+            self::assertSame([50, 100, 200, 400], $crashes);
+
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => $master->get('/')[0] === 200, timeoutSeconds: 6.0),
+                'the worker after the crashes should serve',
+            );
+
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => count($restarts()) >= 5, timeoutSeconds: 6.0),
+                'the crash after the limit: ' . $master->logText(),
+            );
+
+            self::assertSame(50, $restarts()[4]);
+        } finally {
+            $master->stop();
+
+            @unlink($plan);
+        }
+    }
+
+    /**
      * A worker dying on startup must leave its reason in the journal even when the php.ini
      * says display_errors=Off (the production recommendation). A worker runs on its
      * master's php.ini, so display_errors=Off goes there; the worker forces
