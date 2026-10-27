@@ -57,14 +57,22 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
         }
         b"cls" => close(decode(payload)?),
         b"adp" => {
-            let params: payloads::CloseParams = decode(payload)?;
+            let params: payloads::AdoptedParams = decode(payload)?;
 
-            fork::adopted(params.descriptor as libc::c_int)
+            let descriptors: Vec<libc::c_int> = params
+                .descriptors
+                .iter()
+                .map(|&descriptor| descriptor as libc::c_int)
+                .collect();
+
+            fork::adopted(&descriptors)
         }
         b"bnd" => bind(decode(payload)?),
         b"cfk" => fork::refuse_unless_alone().map(|_| Value::Nil),
         b"mst" => {
-            MASTER.store(true, Ordering::Relaxed);
+            let params: payloads::MasterParams = decode(payload)?;
+
+            MASTER.store(params.on, Ordering::Relaxed);
 
             Ok(Value::Nil)
         }
@@ -83,7 +91,8 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
 }
 
 /// Whether this process is a worker master's (`mst`). Set once the master starts
-/// and never cleared in it; a fork clears it in the child (`fork::prepare_child`).
+/// and cleared once it has stopped; a fork clears it in the child
+/// (`fork::prepare_child`).
 static MASTER: AtomicBool = AtomicBool::new(false);
 
 /// Whether this process is a worker master's, which must never start the

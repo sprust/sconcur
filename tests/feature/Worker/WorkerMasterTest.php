@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Worker;
 use Closure;
 use PHPUnit\Framework\TestCase;
 use SConcur\Worker\WorkerMaster;
+use SConcur\Tests\Impl\PhpScript;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -771,6 +772,57 @@ class WorkerMasterTest extends TestCase
 
             self::assertSame(1, $code);
             self::assertStringContainsString('lock', $output);
+            self::assertTrue($master->isRunning(), 'the first master must keep running');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The process is a master's only while it is one: an application whose master was
+     * refused at the lock carries on as itself, and an asynchronous call in it — an alert
+     * that the start failed, say — goes through.
+     */
+    public function testAMasterRefusedAtTheLockLeavesItsProcessFreeToRunAsynchronousCalls(): void
+    {
+        $master = TestWorkerMaster::start(['workerCount' => 1]);
+
+        try {
+            $output = PhpScript::run(
+                code: <<<'PHP'
+                    require $argv[1] . '/vendor/autoload.php';
+
+                    use SConcur\Features\Sleeper\Sleeper;
+                    use SConcur\WaitGroup;
+                    use SConcur\Worker\WorkerGroupConfig;
+                    use SConcur\Worker\WorkerMaster;
+
+                    try {
+                        (new WorkerMaster(
+                            runtimeDir: $argv[2],
+                            groups: [new WorkerGroupConfig(name: 'http', role: static function (): void {})],
+                            name: $argv[3],
+                        ))->run();
+
+                        echo "not refused\n";
+                    } catch (Throwable $exception) {
+                        echo 'refused: ', $exception->getMessage(), "\n";
+                    }
+
+                    $group = WaitGroup::create();
+
+                    $group->add(static fn() => Sleeper::usleep(microseconds: 1_000));
+
+                    $group->waitAll();
+
+                    echo "slept\n";
+                    PHP,
+                arguments: [PhpScript::projectRoot(), $master->runtimeDir(), $master->name()],
+            );
+
+            self::assertStringContainsString('refused: ', $output);
+            self::assertStringContainsString('lock', $output);
+            self::assertStringContainsString('slept', $output);
             self::assertTrue($master->isRunning(), 'the first master must keep running');
         } finally {
             $master->stop();

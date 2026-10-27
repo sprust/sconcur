@@ -61,20 +61,28 @@ class ProcessControl
             return new ForkResult(pid: 0);
         }
 
+        $descriptors = array_filter(
+            [
+                'out' => $answer['out'] ?? -1,
+                'err' => $answer['err'] ?? -1,
+                'hb'  => $answer['hb'] ?? -1,
+            ],
+            static fn(int $descriptor): bool => $descriptor >= 0,
+        );
+
+        try {
+            $streams = self::adopt($descriptors);
+        } catch (ProcessException $exception) {
+            self::abandon($answer['pid']);
+
+            throw $exception;
+        }
+
         return new ForkResult(
             pid: $answer['pid'],
-            stdout: self::adopt(
-                descriptor: $answer['out'] ?? -1,
-                mode: 'r',
-            ),
-            stderr: self::adopt(
-                descriptor: $answer['err'] ?? -1,
-                mode: 'r',
-            ),
-            heartbeat: self::adopt(
-                descriptor: $answer['hb'] ?? -1,
-                mode: 'r',
-            ),
+            stdout: $streams['out'] ?? null,
+            stderr: $streams['err'] ?? null,
+            heartbeat: $streams['hb'] ?? null,
         );
     }
 
@@ -95,7 +103,23 @@ class ProcessControl
      */
     public static function markMaster(): void
     {
-        Extension::get()->process(command: ProcessCommandEnum::MarkMaster);
+        Extension::get()->process(
+            command: ProcessCommandEnum::MarkMaster,
+            payload: ['on' => true],
+        );
+    }
+
+    /**
+     * Undoes markMaster() once the master has stopped: the process that ran it is the
+     * application's again, and may make asynchronous calls — at the cost of never forking
+     * a worker after the first one.
+     */
+    public static function forgetMaster(): void
+    {
+        Extension::get()->process(
+            command: ProcessCommandEnum::MarkMaster,
+            payload: ['on' => false],
+        );
     }
 
     /**
@@ -301,37 +325,79 @@ class ProcessControl
     }
 
     /**
-     * Opens a descriptor the extension handed over as a non-blocking stream. php://fd
-     * opens a copy of it made by dup(2), which does not carry close-on-exec over, so the
-     * extension closes the original and puts the flag on the copy: nothing this process
-     * execs inherits the pipe.
+     * Opens the descriptors the extension handed over as non-blocking streams. php://fd
+     * opens a copy of each made by dup(2), which does not carry close-on-exec over, so the
+     * extension closes the originals and puts the flag on the copies — in one call, which
+     * looks for the copies among what was opened since the fork: nothing this process
+     * execs inherits the pipes. The originals are closed whatever fails, and so are the
+     * streams already opened.
      *
-     * @return resource|null
+     * @param array<string, int> $descriptors
+     *
+     * @return array<string, resource>
      */
-    protected static function adopt(int $descriptor, string $mode): mixed
+    protected static function adopt(array $descriptors): array
     {
-        if ($descriptor < 0) {
-            return null;
+        if ($descriptors === []) {
+            return [];
         }
 
-        $stream = @fopen('php://fd/' . $descriptor, $mode);
-
-        Extension::get()->process(
-            command: ProcessCommandEnum::Adopted,
-            payload: ['fd' => $descriptor],
+        $streams = array_map(
+            static fn(int $descriptor): mixed => @fopen('php://fd/' . $descriptor, 'r'),
+            $descriptors,
         );
 
-        if ($stream === false) {
-            throw new ProcessException(
-                message: sprintf(
-                    'process: the descriptor %d the fork handed over cannot be opened',
-                    $descriptor,
-                ),
+        try {
+            Extension::get()->process(
+                command: ProcessCommandEnum::Adopted,
+                payload: ['fds' => array_values($descriptors)],
             );
+
+            foreach ($streams as $key => $stream) {
+                if ($stream === false) {
+                    throw new ProcessException(
+                        message: sprintf(
+                            'process: the descriptor %d the fork handed over cannot be opened',
+                            $descriptors[$key],
+                        ),
+                    );
+                }
+            }
+        } catch (ProcessException $exception) {
+            foreach ($streams as $stream) {
+                if ($stream !== false) {
+                    fclose($stream);
+                }
+            }
+
+            throw $exception;
         }
 
-        stream_set_blocking($stream, false);
+        foreach ($streams as $stream) {
+            stream_set_blocking($stream, false);
+        }
 
-        return $stream;
+        return $streams;
+    }
+
+    /**
+     * Undoes a fork whose pipes could not be taken: a child the caller is never told
+     * about would serve unwatched, keep what it listens on, and outlive the master as a
+     * stray. It is killed and reaped; adopt() has closed the pipes to it.
+     */
+    protected static function abandon(int $pid): void
+    {
+        self::kill(
+            pid: $pid,
+            signal: ProcessSignalEnum::Kill,
+        );
+
+        // SIGKILL leaves no say to the child, so it is gone within milliseconds. Bounded all
+        // the same: the caller is the master's loop.
+        $deadline = hrtime(true) + 1_000_000_000;
+
+        while (self::reap([$pid]) === [] && hrtime(true) < $deadline) {
+            usleep(1_000);
+        }
     }
 }

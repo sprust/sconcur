@@ -14,6 +14,7 @@
 //! generators unseeded and the parent's objects marked as destroyed. A child
 //! that cannot be prepared exits instead (see `abandon`).
 
+use std::cell::RefCell;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use libc::c_int;
@@ -71,6 +72,9 @@ pub fn fork(params: ForkParams) -> Result<Value, Error> {
     };
 
     let heartbeat = heartbeat.map_or(-1, |pipe| handed_over(pipe.read));
+
+    // One for each pipe, and a couple for whatever else PHP opens on the way.
+    remember_free_numbers(3 + 2);
 
     Ok(Map::new()
         .set("pid", pid as i64)
@@ -359,42 +363,106 @@ fn handed_over(descriptor: OwnedFd) -> RawFd {
     descriptor.into_raw_fd()
 }
 
-/// Closes a descriptor the fork handed over, once PHP has opened its stream on
-/// it, and makes the descriptor of that stream close-on-exec. php://fd opens a
-/// copy made by dup(2), which leaves the flag behind: without this, every
-/// process a forking parent starts would hold the read ends of its children's
-/// pipes.
-///
-/// The copy is found as the other descriptor open on the same file the same
-/// way. A pipe the fork made is open nowhere else in this process — the end
-/// that went to the other process is closed here — so that is PHP's copy and
-/// nothing else. Where the open descriptors cannot be listed, the descriptor
-/// is only closed.
-pub fn adopted(descriptor: RawFd) -> Result<Value, Error> {
-    let copies = identity(descriptor).map_or_else(Vec::new, |original| {
-        open_descriptors()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|&other| other != descriptor && identity(other) == Some(original))
-            .collect()
-    });
+thread_local! {
+    /// The lowest numbers free once a fork handed its pipes over: dup(2) takes the
+    /// lowest free number, so the copies PHP then opens of them land there. Taken
+    /// by `adopted`, so it describes the last fork only. Per thread because the PHP
+    /// thread is the only one that forks, and so that the tests, each on a thread
+    /// of its own, do not share it.
+    static FREE_AT_FORK: RefCell<Vec<RawFd>> = const { RefCell::new(Vec::new()) };
+}
 
-    if unsafe { libc::close(descriptor) } != 0 {
-        return Err(Error::Failed(format!(
-            "close {descriptor}: {}",
-            std::io::Error::last_os_error()
-        )));
+/// Finds the `count` lowest free numbers by taking them — open(2) takes the lowest
+/// free number too — and gives them straight back: a few calls, where listing
+/// what is open would cost one per descriptor a master holds.
+fn remember_free_numbers(count: usize) {
+    let mut free = Vec::with_capacity(count);
+
+    while free.len() < count {
+        let number = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+
+        if number < 0 {
+            break;
+        }
+
+        free.push(number);
+    }
+
+    for &number in &free {
+        unsafe { libc::close(number) };
+    }
+
+    FREE_AT_FORK.set(free);
+}
+
+/// Closes the descriptors a fork handed over, once PHP has opened its streams on
+/// them, and makes the descriptors of those streams close-on-exec. php://fd
+/// opens a copy made by dup(2), which leaves the flag behind: without this,
+/// every process a forking parent starts would hold the read ends of its
+/// children's pipes.
+///
+/// A copy is found as another descriptor open on the same file the same way. A
+/// pipe the fork made is open nowhere else in this process — the end that went
+/// to the other process is closed here — so that is PHP's copy and nothing else.
+/// dup(2) takes the lowest free number, so the copies are at the numbers that were
+/// free at the fork (`FREE_AT_FORK`): those few are asked about first, and every
+/// open descriptor — three pipes per worker in a master — only for a copy not
+/// among them. Where the open descriptors cannot be listed, the descriptors are
+/// only closed.
+///
+/// Every one handed over is closed, whatever fails: the first failure is the
+/// answer.
+pub fn adopted(descriptors: &[RawFd]) -> Result<Value, Error> {
+    let likely = FREE_AT_FORK.take();
+
+    let mut everything: Option<Vec<RawFd>> = None;
+
+    let mut copies = Vec::new();
+
+    for &descriptor in descriptors {
+        let Some(original) = identity(descriptor) else {
+            continue;
+        };
+
+        let same = |candidates: &[RawFd]| -> Vec<RawFd> {
+            candidates
+                .iter()
+                .copied()
+                .filter(|&other| !descriptors.contains(&other) && identity(other) == Some(original))
+                .collect()
+        };
+
+        let mut found = same(&likely);
+
+        if found.is_empty() {
+            found = same(everything.get_or_insert_with(|| open_descriptors().unwrap_or_default()));
+        }
+
+        copies.extend(found);
+    }
+
+    let mut outcome = Ok(Value::Nil);
+
+    for &descriptor in descriptors {
+        if unsafe { libc::close(descriptor) } != 0 && outcome.is_ok() {
+            outcome = Err(Error::Failed(format!(
+                "close {descriptor}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
     }
 
     for copy in copies {
         let flags = unsafe { libc::fcntl(copy, libc::F_GETFD) };
 
-        if flags < 0 || unsafe { libc::fcntl(copy, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-            return Err(failed("fcntl"));
+        if (flags < 0 || unsafe { libc::fcntl(copy, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0)
+            && outcome.is_ok()
+        {
+            outcome = Err(failed("fcntl"));
         }
     }
 
-    Ok(Value::Nil)
+    outcome
 }
 
 /// The file a descriptor is open on and the way it is open: the two ends of a
@@ -485,7 +553,7 @@ mod tests {
 
         assert!(!close_on_exec(copy) && !close_on_exec(other) && !close_on_exec(other_end));
 
-        assert!(adopted(handed).is_ok());
+        assert!(adopted(&[handed]).is_ok());
 
         assert!(close_on_exec(copy), "the copy would reach whatever this process execs");
         assert!(!close_on_exec(other), "a descriptor on another pipe was changed");
@@ -495,6 +563,46 @@ mod tests {
             libc::close(copy);
             libc::close(other);
             libc::close(other_end);
+        }
+    }
+
+    /// After a fork the copies are looked for at the numbers that were free at
+    /// the fork, and found there: every copy of every pipe handed over at once,
+    /// and a descriptor that was open at the fork left alone even on the same
+    /// pipe.
+    #[test]
+    fn the_copies_at_the_numbers_free_at_the_fork_are_made_close_on_exec() {
+        let first = pipe().ok().unwrap();
+        let second = pipe().ok().unwrap();
+
+        let older_end = unsafe { libc::dup(first.write.as_raw_fd()) };
+
+        let handed = [handed_over(first.read), handed_over(second.read)];
+
+        remember_free_numbers(4);
+
+        let copies = handed.map(|descriptor| unsafe { libc::dup(descriptor) });
+
+        assert!(copies.iter().all(|&copy| !close_on_exec(copy)));
+
+        assert!(adopted(&handed).is_ok());
+
+        assert!(
+            copies.iter().all(|&copy| close_on_exec(copy)),
+            "a copy would reach whatever this process execs"
+        );
+        assert!(!close_on_exec(older_end), "the other end of the pipe was changed");
+        assert!(
+            handed.iter().all(|&descriptor| unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0),
+            "a descriptor handed over was left open"
+        );
+
+        unsafe {
+            for copy in copies {
+                libc::close(copy);
+            }
+
+            libc::close(older_end);
         }
     }
 }

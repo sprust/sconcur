@@ -68,9 +68,26 @@ pub struct MarkParams {
     pub mark: i64,
 }
 
-/// PHP: ProcessCommandEnum::Close and ProcessCommandEnum::Adopted.
+/// PHP: ProcessCommandEnum::Close.
 #[derive(Deserialize)]
 pub struct CloseParams {
     #[serde(rename = "fd")]
     pub descriptor: i64,
+}
+
+/// PHP: ProcessCommandEnum::Adopted.
+#[derive(Deserialize)]
+pub struct AdoptedParams {
+    /// The descriptors a fork handed over, each opened as a stream by now.
+    #[serde(rename = "fds")]
+    pub descriptors: Vec<i64>,
+}
+
+/// PHP: ProcessCommandEnum::MarkMaster.
+#[derive(Deserialize)]
+pub struct MasterParams {
+    /// Whether this process is a worker master's from here on: set when the
+    /// master starts, cleared once it has stopped.
+    #[serde(rename = "on")]
+    pub on: bool,
 }

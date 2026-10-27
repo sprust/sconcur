@@ -184,10 +184,6 @@ class WorkerMaster
         // reason, rather than at the first worker.
         ProcessControl::assertForkable();
 
-        // From here on an asynchronous call in this process is refused before it starts
-        // the runtime, which would leave the master unable to fork the next worker.
-        ProcessControl::markMaster();
-
         $this->masterPid = (int) getmypid();
         $this->startedAt = microtime(true);
         $this->cwd       = getcwd() ?: '.';
@@ -222,6 +218,12 @@ class WorkerMaster
         // Everything after the lock is acquired runs under the finally so the lock
         // and signal handlers are always restored — even if writeState() throws.
         $restoreSignals = null;
+
+        // From here on an asynchronous call in this process is refused before it starts
+        // the runtime, which would leave the master unable to fork the next worker. Only
+        // while it is the master: a second one refused at the lock, or one that returned,
+        // is the application's process again.
+        ProcessControl::markMaster();
 
         try {
             $restoreSignals = $this->installSignalHandlers();
@@ -258,6 +260,8 @@ class WorkerMaster
 
             $this->stateFile->clear();
             $this->lock->release();
+
+            ProcessControl::forgetMaster();
 
             $this->logger->master(
                 level: MasterLogger::INFO,

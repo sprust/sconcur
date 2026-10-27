@@ -48,8 +48,8 @@ enum ProcessCommandEnum: string
     case Close = 'cls';
 
     /**
-     * Closes a descriptor a fork handed over once PHP has opened its stream on a copy, and
-     * makes that copy close-on-exec. Rust: payloads::CloseParams.
+     * Closes the descriptors a fork handed over once PHP has opened its streams on copies,
+     * and makes those copies close-on-exec. Rust: payloads::AdoptedParams.
      */
     case Adopted = 'adp';
 
@@ -65,6 +65,6 @@ enum ProcessCommandEnum: string
     /** Writes one mark on the heartbeat pipe. Rust: payloads::MarkParams. */
     case MarkHeartbeat = 'hbw';
 
-    /** Marks this process as a worker master's, which runs nothing asynchronous. No parameters. */
+    /** Marks this process as a worker master's, which runs nothing asynchronous, or no longer. Rust: payloads::MasterParams. */
     case MarkMaster = 'mst';
 }
