@@ -130,9 +130,9 @@ timeouts are in milliseconds.
 | `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent. `null` — the master that forked this worker (`WorkerContext`, see the [worker master](worker-master.md#self-termination-of-orphaned-workers)), or no check outside one. |
-| `telemetrySocket` | `''` (off) | Unix socket for stats snapshots ([stats](admin-stats.md)). Empty — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
-| `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. Left at the default — `SCONCUR_SERVER_NAME` from the environment, which the master sets as `<group>:<slot>`. |
-| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or the default of the component that sends them (1000 ms). |
+| `telemetrySocket` | `null` | Unix socket for stats snapshots ([stats](admin-stats.md)); `''` — off. `null` — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
+| `serverName` | `null` | Worker name in the stats snapshots. `null` — `SCONCUR_SERVER_NAME` from the environment, which the master sets as `<group>:<slot>`, or `sconcur-server`. |
+| `telemetryIntervalMs` | `null` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). `null` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or that default. |
 | `preemptionQuantumMs` | `0` | Automatic-preemption quantum while serving; `0` — off. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 
 ### Building the server from argv

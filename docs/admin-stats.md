@@ -126,7 +126,7 @@ running without a master):
 
 Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, set only when
 telemetry is enabled. A server's own constructor parameters (`telemetrySocket`,
-`serverName`, `telemetryIntervalMs`) win over the environment when they are set. A queue consumer has no such parameters — the
+`serverName`, `telemetryIntervalMs`) win over the environment unless they are left `null`; an empty `telemetrySocket` turns the push off for that server even under a master. A queue consumer has no such parameters — the
 extension reads the socket and the pool name from the environment, and labels its
 snapshots `<group>:<slot>` from what the master set. Several masters on one machine
 need different `panelPort`s and a different `runtimeDir` or `name`.

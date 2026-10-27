@@ -8,6 +8,8 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use SConcur\Exceptions\Server\InvalidServerArgumentException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\HttpServer\HttpServer;
+use SConcur\Features\SocketServer\SocketServer;
+use SConcur\Features\WsServer\WsServer;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\PhpScript;
@@ -243,23 +245,22 @@ class HttpServerFdAddressTest extends BaseTestCase
 
     /**
      * reusePort has nothing to set on a socket that is bound already, so it is refused
-     * beside fd:// rather than ignored.
+     * beside fd:// rather than ignored — where the server is built, so a role holding such
+     * a server fails in the master's own config rather than in every worker it forks.
      */
     public function testReusePortBesideADescriptorIsRefused(): void
     {
         $factory = new Psr17Factory();
 
-        $server = new HttpServer(
+        $this->expectException(InvalidServerArgumentException::class);
+        $this->expectExceptionMessage('reusePort does not apply to fd://3');
+
+        new HttpServer(
             serverRequestFactory: $factory,
             responseFactory: $factory,
             address: 'fd://3',
             reusePort: true,
         );
-
-        $this->expectException(InvalidServerArgumentException::class);
-        $this->expectExceptionMessage('reusePort does not apply to fd://3');
-
-        $server->serve(static fn() => $factory->createResponse(200));
     }
 
     /**
@@ -270,15 +271,29 @@ class HttpServerFdAddressTest extends BaseTestCase
     {
         $factory = new Psr17Factory();
 
-        $server = HttpServer::fromArgs(
+        $this->expectException(InvalidServerArgumentException::class);
+        $this->expectExceptionMessage('a descriptor is given as fd://<number>');
+
+        HttpServer::fromArgs(
             argv: ['server.php', '--address=fd://three'],
             serverRequestFactory: $factory,
             responseFactory: $factory,
         );
+    }
 
-        $this->expectException(InvalidServerArgumentException::class);
-        $this->expectExceptionMessage('a descriptor is given as fd://<number>');
+    /**
+     * The socket and WebSocket servers take the same address, and refuse it the same way.
+     */
+    public function testTheOtherServersRefuseAMalformedDescriptorAddressToo(): void
+    {
+        foreach ([SocketServer::class, WsServer::class] as $server) {
+            try {
+                new $server(address: 'fd://', reusePort: false);
 
-        $server->serve(static fn() => $factory->createResponse(200));
+                self::fail($server . ' took fd:// without a number');
+            } catch (InvalidServerArgumentException $exception) {
+                self::assertStringContainsString('fd://<number>', $exception->getMessage());
+            }
+        }
     }
 }

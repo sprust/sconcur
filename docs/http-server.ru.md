@@ -131,9 +131,9 @@ php -d extension=./ext/build/sconcur.so server.php
 | `reusePort` | `false` | `SO_REUSEPORT` — несколько процессов на одном порту. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Штатно остановиться, как только этот pid перестал быть родителем. `null` — мастер, форкнувший этот воркер (`WorkerContext`, см. [мастер воркеров](worker-master.ru.md#самозавершение-осиротевших-воркеров)), а вне мастера проверки нет. |
-| `telemetrySocket` | `''` (выкл.) | Unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)). Пусто — `SCONCUR_TELEMETRY_SOCKET` из окружения, который мастер ставит своим воркерам. |
-| `serverName` | `'sconcur-server'` | Имя воркера в снапшотах статистики. Если оставлено по умолчанию — `SCONCUR_SERVER_NAME` из окружения, который мастер ставит как `<группа>:<слот>`. |
-| `telemetryIntervalMs` | `0` | Период снапшотов; `0` — `SCONCUR_TELEMETRY_INTERVAL_MS` из окружения или значение по умолчанию у отправителя (1000 мс). |
+| `telemetrySocket` | `null` | Unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)); `''` — выкл. `null` — `SCONCUR_TELEMETRY_SOCKET` из окружения, который мастер ставит своим воркерам. |
+| `serverName` | `null` | Имя воркера в снапшотах статистики. `null` — `SCONCUR_SERVER_NAME` из окружения, который мастер ставит как `<группа>:<слот>`, или `sconcur-server`. |
+| `telemetryIntervalMs` | `null` | Период снапшотов; `0` — значение по умолчанию у отправителя (1000 мс). `null` — `SCONCUR_TELEMETRY_INTERVAL_MS` из окружения или это значение. |
 | `preemptionQuantumMs` | `0` | Квант автоматической преемпции во время serve; `0` — выкл. Перед включением прочитайте про [состояние процесса](coroutine-switching.ru.md#состояние-процесса). |
 
 ### Сборка сервера из argv

@@ -97,9 +97,9 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check: `null` — the master that forked this worker (`WorkerContext`), or none outside one |
-| `telemetrySocket` | `''` (off) | unix socket for stats snapshots ([stats](admin-stats.md)); empty — `SCONCUR_TELEMETRY_SOCKET`, which the master sets for its workers |
-| `serverName` | `'sconcur-server'` | worker name in the stats snapshots; left at the default — `SCONCUR_SERVER_NAME`, which the master sets |
-| `telemetryIntervalMs` | `0` | snapshot cadence (`0` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or the default of the component that sends them, 1000 ms) |
+| `telemetrySocket` | `null` | unix socket for stats snapshots ([stats](admin-stats.md)); `''` — off; `null` — `SCONCUR_TELEMETRY_SOCKET`, which the master sets for its workers |
+| `serverName` | `null` | worker name in the stats snapshots; `null` — `SCONCUR_SERVER_NAME`, which the master sets, or `sconcur-server` |
+| `telemetryIntervalMs` | `null` | snapshot cadence (`0` — the default of the component that sends them, 1000 ms; `null` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or that default) |
 | `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 ## Concurrency

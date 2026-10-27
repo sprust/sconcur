@@ -91,21 +91,18 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * A telemetry setting as the server runs with it: its own, or — where it was left
-     * unset — what the environment says. A worker master puts the collector socket and
-     * the pool's name there (SCONCUR_TELEMETRY_SOCKET, SCONCUR_SERVER_NAME); the operator
-     * may set the cadence (SCONCUR_TELEMETRY_INTERVAL_MS). Through the environment, so a
-     * server built in a worker's role reports to its master without being told to.
+     * A telemetry setting from the environment, for a server that left its own null: a
+     * worker master puts the collector socket and the pool's name there
+     * (SCONCUR_TELEMETRY_SOCKET, SCONCUR_SERVER_NAME); the operator may set the cadence
+     * (SCONCUR_TELEMETRY_INTERVAL_MS). Through the environment, so a server built in a
+     * worker's role reports to its master without being told to, while a value of its
+     * own, an empty socket included, is never overridden.
      */
-    protected static function fromEnvironment(string $value, string $name, string $unset = ''): string
+    protected static function fromEnvironment(string $name, string $default = ''): string
     {
-        if ($value !== $unset) {
-            return $value;
-        }
+        $value = getenv($name);
 
-        $environmentValue = getenv($name);
-
-        return is_string($environmentValue) && $environmentValue !== '' ? $environmentValue : $value;
+        return is_string($value) && $value !== '' ? $value : $default;
     }
 
     /**
@@ -126,7 +123,9 @@ trait ServerRuntimeSupportTrait
     /**
      * The descriptor a server's address hands over, or null for one to bind. "fd://N" is
      * a listening socket bound elsewhere, accepted on as it is, so there is nothing for
-     * reusePort to set and it is refused beside one rather than silently ignored.
+     * reusePort to set and it is refused beside one rather than silently ignored. The
+     * servers ask it in their constructors as well, so a wrong address is refused where
+     * the server is built, not in every worker that serves it.
      */
     protected static function listenerDescriptor(string $address, bool $reusePort): ?int
     {

@@ -27,7 +27,6 @@ readonly class WsServer
     use ServerRuntimeSupportTrait;
 
     /**
-     * @param string                                    $address             host:port to bind, e.g. "0.0.0.0:9200".
      * @param int                                       $handshakeTimeoutMs  accepted and passed to the extension, which does not apply
      *                                                                       it: nothing bounds reading the upgrade request.
      * @param int                                       $idleTimeoutMs       idle timeout while reading the next inbound message
@@ -75,14 +74,15 @@ readonly class WsServer
      *                                                                       orphaned worker drains and exits instead of holding the port. Null
      *                                                                       (default): the master that forked this worker (WorkerContext), or
      *                                                                       none outside a master.
-     * @param string                                    $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
-     *                                                                       to (empty = push off). Best-effort and lossy: an absent collector
-     *                                                                       never affects serving. Left empty, it is read from
-     *                                                                       SCONCUR_TELEMETRY_SOCKET, which a WorkerMaster sets for its workers.
-     * @param string                                    $serverName          labels the pushed snapshot — the pool scope the collector
-     *                                                                       aggregates by. Left at "sconcur-server", it is read from
-     *                                                                       SCONCUR_SERVER_NAME, which a WorkerMaster sets for its workers.
-     * @param int                                       $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
+     * @param null|string                               $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
+     *                                                                       to; empty = push off. Best-effort and lossy: an absent collector
+     *                                                                       never affects serving. Null (default): SCONCUR_TELEMETRY_SOCKET,
+     *                                                                       which a WorkerMaster sets for its workers when telemetry is on.
+     * @param null|string                               $serverName          labels the pushed snapshot — the pool scope the collector
+     *                                                                       aggregates by. Null (default): SCONCUR_SERVER_NAME, which a
+     *                                                                       WorkerMaster sets for its workers, or "sconcur-server".
+     * @param null|int                                  $telemetryIntervalMs snapshot sample/push cadence in ms (0 = the default). Null
+     *                                                                       (default): SCONCUR_TELEMETRY_INTERVAL_MS, or the default.
      * @param int                                       $preemptionQuantumMs automatic-preemption quantum: while serving, the
      *                                                                       extension interrupts the VM every quantum and parks the
      *                                                                       running handler coroutine, so a CPU-bound handler cannot
@@ -110,11 +110,12 @@ readonly class WsServer
         protected array $subprotocols = [],
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
-        protected string $telemetrySocket = '',
-        protected string $serverName = 'sconcur-server',
-        protected int $telemetryIntervalMs = 0,
+        protected ?string $telemetrySocket = null,
+        protected ?string $serverName = null,
+        protected ?int $telemetryIntervalMs = null,
         protected int $preemptionQuantumMs = 0,
     ) {
+        self::listenerDescriptor($address, $reusePort);
     }
 
     /**
@@ -165,20 +166,14 @@ readonly class WsServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
-                    listenFd: self::listenerDescriptor(
-                        address: $this->address,
-                        reusePort: $this->reusePort,
-                    ),
+                    listenFd: self::listenerDescriptor($this->address, $this->reusePort),
                     path: $this->path,
                     allowedOrigins: $this->allowedOrigins,
                     subprotocols: $this->subprotocols,
-                    telemetrySocket: self::fromEnvironment($this->telemetrySocket, 'SCONCUR_TELEMETRY_SOCKET'),
-                    serverName: self::fromEnvironment($this->serverName, 'SCONCUR_SERVER_NAME', 'sconcur-server'),
-                    telemetryIntervalMs: (int) self::fromEnvironment(
-                        value: (string) $this->telemetryIntervalMs,
-                        name: 'SCONCUR_TELEMETRY_INTERVAL_MS',
-                        unset: '0',
-                    ),
+                    telemetrySocket: $this->telemetrySocket ?? self::fromEnvironment('SCONCUR_TELEMETRY_SOCKET'),
+                    serverName: $this->serverName ?? self::fromEnvironment('SCONCUR_SERVER_NAME', 'sconcur-server'),
+                    telemetryIntervalMs: $this->telemetryIntervalMs
+                        ?? (int) self::fromEnvironment('SCONCUR_TELEMETRY_INTERVAL_MS', '0'),
                 ),
             );
 
