@@ -468,9 +468,21 @@ Caveats:
 `SO_REUSEPORT` on every socket has a price: a process started on a port that is
 already taken does not fail with `EADDRINUSE`, it joins, and the kernel spreads the
 connections over both. A server left running from an earlier deploy, or a second
-master (with another `name` or `runtimeDir` — the same one is refused by its lock),
-serves part of the traffic with its own code. Make sure the old one is gone before
-the new one starts, by its pid or by `MasterControl::isRunning()`.
+master, serves part of the traffic with its own code. For a second
+[worker master](worker-master.md) on the same port:
+
+- with the same `name` and `runtimeDir` it does not start: its lock is held, and it
+  fails with `MasterAlreadyRunningException` before it forks a worker;
+- with another `name` or `runtimeDir` it starts, and so do its workers: both pools
+  serve the port. Two masters of two workers each on one port took 40 requests as
+  15, 9, 7 and 9 — every one of the four workers had a share;
+- under another user its workers fail with `EADDRINUSE`: the kernel lets only
+  sockets of one effective UID share a port.
+
+So give an application one fixed `name` and `runtimeDir`, the same in every deploy —
+then a master started by mistake beside a running one stops at the lock — and make
+sure a standalone server is gone before the next one starts, by its pid or, for a
+master, by `MasterControl::isRunning()`.
 
 There is no option to bind without it, and no way to hand a server a socket bound
 elsewhere: a pool of processes on one shared socket all wake for every connection,

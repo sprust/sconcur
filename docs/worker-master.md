@@ -587,6 +587,12 @@ non-blocking lock on `runtimeDir/<name>.lock`, and a second master with the same
 `runtimeDir`+`name` gets `MasterAlreadyRunningException`. The kernel releases the
 lock on the process's death (even on `SIGKILL`), so there is no stale-lock problem.
 
+The lock is also what keeps two pools off one port. Every server binds with
+`SO_REUSEPORT`, so a second master with another `name` or `runtimeDir` starts, and its
+workers share the port with the first one's — see
+[a second process on the port](http-server.md#a-second-process-on-the-port). Keep one
+`name` and `runtimeDir` per application.
+
 The state file `runtimeDir/<name>-state.json` holds pid, start time, the total worker
 count, a per-group breakdown (`groups`: name and worker count) and status; it is
 written atomically, removed on a clean exit and left behind after a crash. It is also a
