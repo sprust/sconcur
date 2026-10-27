@@ -35,7 +35,7 @@ use types::method::Method;
 
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
-const VERSION: &str = "0.17.0";
+const VERSION: &str = "0.18.0";
 
 // Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
 // result builder the wait exports hand their results to, the value builder that

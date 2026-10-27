@@ -122,7 +122,7 @@ running without a master):
 |---|---|---|
 | `SCONCUR_TELEMETRY_SOCKET` | collector unix socket; empty = push off | empty |
 | `SCONCUR_SERVER_NAME` | snapshot label; the master sets `<group>:<slot>` | `sconcur-server` |
-| `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot sample/push cadence | `1000` |
+| `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot push cadence; memory and CPU are read every 5 s, or on every push when it is slower | `1000` |
 
 Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, set only when
 telemetry is enabled. A server's own constructor parameters (`telemetrySocket`,
@@ -143,7 +143,9 @@ running unlike pools shows each of them beside the others.
 | Field | What it is | Source |
 |---|---|---|
 | `memory.rssBytes` | RSS of the whole process (with the extension) | `/proc/self/status` `VmRSS` |
-| `cpuPercent` | CPU usage by the process over the interval | diff of `/proc/self/stat` |
+| `memory.pssBytes` | PSS: the process's share of its resident memory, a page shared with other processes divided among them | `/proc/self/smaps_rollup` `Pss` |
+| `memory.swapPssBytes` | the same share of what the process has in swap | `/proc/self/smaps_rollup` `SwapPss` |
+| `cpuPercent` | CPU usage by the process between the last two readings | diff of `/proc/self/stat` |
 | `runtimeTasks` | live tasks in the extension's runtime | the runtime's own metrics |
 | `startedAt` / `uptimeSeconds` | when the worker's serve loop started (UTC) and its lifetime | serve-loop start |
 | `requests.completed` | requests served (HTTP) | counter |
@@ -159,13 +161,28 @@ running unlike pools shows each of them beside the others.
 | `consumers.inFlight` | delivered and not settled yet | registry of the deliveries being handled |
 | `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | age of the deliveries being handled |
 | `master.pid` / `startedAt` / `uptimeSeconds` | the master process itself | master |
-| `master.memory.rssBytes` / `master.cpuPercent` | RSS and CPU of the master | `/proc/self/*` |
+| `master.memory.*` / `master.cpuPercent` | memory and CPU of the master | `/proc/self/*` |
 
 All date-time fields are UTC (ISO-8601 with a `+00:00` offset). The duration
 buckets are exclusive: a request that has been running for 7 s lands only in
 `inFlight5to15s`. In `totals`, `requests.avgMs` is weighted by workers'
 `completed` and `consumers.avgMs` by `consumers.timed`, while `cpuPercent` is the
 sum of per-process values and can exceed 100%.
+
+RSS counts a page shared between processes whole in each of them: what a worker
+inherited from the master, the PHP binary, the libraries. Summed over a pool, it
+overstates the memory the pool takes. PSS divides such a page among the processes
+that map it, so the PSS of the workers plus that of the master is what the pool
+takes; add `swapPssBytes` to count what has gone to swap. PSS does not show a leak:
+under memory pressure the kernel drops clean file pages and PSS falls while nothing
+was freed, and a worker's PSS moves when a neighbour starts or exits. For a leak, see
+[load-testing](load-testing.md).
+
+Memory and CPU are read every 5 s, and the snapshots in between repeat them. The
+kernel answers PSS by walking the process's page tables (0.2 ms for a 60 MB worker,
+a few milliseconds for a 500 MB one) and holds its memory-map lock for that time: a
+PHP thread that maps or unmaps memory at that moment waits. The extension reads it
+on its thread pool for blocking calls, so its own runtime does not wait.
 
 The consumer numbers cost nothing extra on the wire: a delivery is counted where it
 leaves for PHP, and settled by the `basic.ack`, `basic.nack` or `basic.reject` that
@@ -203,11 +220,11 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
     "pid": 12340,
     "startedAt": "2026-06-24T11:00:00+00:00",
     "uptimeSeconds": 3600.0,
-    "memory": { "rssBytes": 16777216 },
+    "memory": { "rssBytes": 16777216, "pssBytes": 8388608, "swapPssBytes": 0 },
     "cpuPercent": 0.6
   },
   "totals": {
-    "memory": { "rssBytes": 335544320 },
+    "memory": { "rssBytes": 335544320, "pssBytes": 209715200, "swapPssBytes": 0 },
     "cpuPercent": 28.4,
     "runtimeTasks": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
@@ -219,7 +236,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
       "workersHung": 0,
       "watchdogKills": 0,
       "totals": {
-        "memory": { "rssBytes": 335544320 },
+        "memory": { "rssBytes": 335544320, "pssBytes": 209715200, "swapPssBytes": 0 },
         "cpuPercent": 28.4,
         "runtimeTasks": 192,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
@@ -234,7 +251,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040 },
+      "memory": { "rssBytes": 41943040, "pssBytes": 26214400, "swapPssBytes": 0 },
       "cpuPercent": 3.7,
       "runtimeTasks": 24,
       "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
@@ -262,8 +279,10 @@ sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
 sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
 sconcur_master_start_time_seconds{name="sconcur-servers"} 1782298800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_master_memory_pss_bytes{name="sconcur-servers"} 8388608
 sconcur_group_workers{name="sconcur-servers",group="http"} 8
 sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 335544320
+sconcur_group_memory_pss_bytes{name="sconcur-servers",group="http"} 209715200
 sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1782302087
 sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
@@ -272,8 +291,8 @@ Four scopes, told apart by their prefix and their labels:
 
 | Family | Scope | Labels |
 | --- | --- | --- |
-| `sconcur_pool_*` | every worker of the master together: worker and hung counts, watchdog kills, CPU, RSS, runtime tasks, and the workload — `requests`, `connections`, `deliveries` (the queue workload) | `name` |
-| `sconcur_group_*` | one pool: its worker count, hung count, watchdog kills, CPU, RSS and runtime tasks | `name`, `group` |
+| `sconcur_pool_*` | every worker of the master together: worker and hung counts, watchdog kills, CPU, RSS, PSS, runtime tasks, and the workload — `requests`, `connections`, `deliveries` (the queue workload) | `name` |
+| `sconcur_group_*` | one pool: its worker count, hung count, watchdog kills, CPU, RSS, PSS and runtime tasks | `name`, `group` |
 | `sconcur_master_*` | the master process itself | `name` |
 | `sconcur_worker_*` | one worker | `name`, `pid`; `group` on the process metrics only |
 
@@ -317,8 +336,9 @@ third-party supervisor too:
   zero.
 - `requests.avgMs` is the average over the worker's whole lifetime, so it smooths
   spikes (percentiles are a possible future improvement).
-- The whole snapshot is sampled once an interval (1 s by default), and no source
-  stops the process to read it.
+- A snapshot goes out once an interval (1 s by default); the memory and CPU in it are
+  read every 5 s. No source stops the process to read it, though reading PSS holds
+  the memory-map lock for the walk (see above).
 
 ---
 

@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Telemetry;
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Telemetry\FrameTooLargeException;
 use SConcur\Telemetry\Dto\MasterInfo;
+use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\Dto\Snapshot;
 use SConcur\Telemetry\FrameCodec;
 use SConcur\Telemetry\Render\HtmlRenderer;
@@ -137,7 +138,11 @@ class TelemetryCoreTest extends TestCase
             pid: 4242,
             startedAtMs: $now - 60_000,
             uptimeSeconds: 60.0,
-            rssBytes: 52_428_800,
+            memory: new Memory(
+                rssBytes: 52_428_800,
+                pssBytes: 20_971_520,
+                swapPssBytes: 1_048_576,
+            ),
             cpuPercent: 7.5,
         );
 
@@ -155,11 +160,17 @@ class TelemetryCoreTest extends TestCase
         self::assertSame(4242, $json['master']['pid']);
         self::assertStringEndsWith('+00:00', (string) $json['master']['startedAt']);
         self::assertSame(52_428_800, $json['master']['memory']['rssBytes']);
+        self::assertSame(20_971_520, $json['master']['memory']['pssBytes']);
+        self::assertSame(1_048_576, $json['master']['memory']['swapPssBytes']);
         self::assertStringEndsWith('+00:00', (string) $json['workers'][0]['startedAt']);
 
         $metrics = (new PrometheusRenderer())->render($aggregate);
 
         self::assertStringContainsString('sconcur_master_memory_rss_bytes{name="srv"} 52428800', $metrics);
+        self::assertStringContainsString('sconcur_master_memory_pss_bytes{name="srv"} 20971520', $metrics);
+        self::assertStringContainsString('sconcur_master_memory_swap_pss_bytes{name="srv"} 1048576', $metrics);
+        self::assertStringContainsString('sconcur_worker_memory_pss_bytes{name="srv",pid="11",group="srv"} 600', $metrics);
+        self::assertStringContainsString('sconcur_pool_memory_pss_bytes{name="srv"} 600', $metrics);
         self::assertStringContainsString('sconcur_master_cpu_percent{name="srv"} 7.5', $metrics);
         // The worker series carry the pool a worker belongs to: one master runs unlike
         // pools, and without the label a dashboard cannot tell them apart.

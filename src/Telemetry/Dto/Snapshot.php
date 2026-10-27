@@ -45,7 +45,7 @@ readonly class Snapshot
             return null;
         }
 
-        $memory = is_array($data['memory'] ?? null) ? Memory::fromArray($data['memory']) : new Memory(rssBytes: 0);
+        $memory = Memory::fromArray(is_array($data['memory'] ?? null) ? $data['memory'] : []);
 
         return new self(
             name: $name,

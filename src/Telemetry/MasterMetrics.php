@@ -5,15 +5,16 @@ declare(strict_types=1);
 namespace SConcur\Telemetry;
 
 use SConcur\Telemetry\Dto\MasterInfo;
+use SConcur\Telemetry\Dto\Memory;
 
 /**
- * Samples the worker master's own process metrics (RSS from /proc/self/status, CPU
- * from /proc/self/stat) — the PHP-side mirror of the sampler a worker runs for itself
- * (ext/src/stats/metrics.rs).
- * RSS is read on demand; CPU is a rolling percentage refreshed by sample() on a fixed
- * cadence (the runtime calls it once per second), so the value the panel reports is a
- * real interval rate rather than a since-boot average. Linux-only: off /proc the
- * readings degrade to 0.
+ * Samples the worker master's own process metrics (RSS from /proc/self/status, Pss and
+ * SwapPss from /proc/self/smaps_rollup, CPU from /proc/self/stat) — the PHP-side mirror
+ * of the sampler a worker runs for itself (ext/src/stats/metrics.rs).
+ * Both are refreshed by sample() on a fixed cadence (the runtime calls it every five
+ * seconds, the cadence a worker reads its own at), so CPU is a real interval rate rather
+ * than a since-boot average; snapshot() repeats the last reading in between. Linux-only:
+ * off /proc the readings degrade to 0.
  */
 class MasterMetrics
 {
@@ -33,6 +34,8 @@ class MasterMetrics
 
     protected float $cpuPercent = 0.0;
 
+    protected ?Memory $memory = null;
+
     /**
      * @param int $startedAtMs the master's serve start (epoch ms); <= 0 falls back to
      *                         now, so a standalone runtime still reports a sane uptime.
@@ -44,12 +47,15 @@ class MasterMetrics
     }
 
     /**
-     * Refreshes the rolling CPU percentage by diffing consumed CPU ticks against wall
-     * time since the previous call. The first call only seeds the baseline. Driven by
-     * the runtime on a fixed cadence so the rate is over a known interval.
+     * Reads memory afresh and refreshes the rolling CPU percentage by diffing consumed
+     * CPU ticks against wall time since the previous call. The first call only seeds the
+     * CPU baseline. Driven by the runtime on a fixed cadence so the rate is over a known
+     * interval.
      */
     public function sample(float $nowSeconds): void
     {
+        $this->memory = $this->readMemory();
+
         $ticks = $this->readCpuTicks();
 
         if (!$this->seeded) {
@@ -74,8 +80,8 @@ class MasterMetrics
     }
 
     /**
-     * Builds the current master metrics: fresh RSS, the last sampled CPU percent, and
-     * the uptime derived from $nowMs.
+     * Builds the current master metrics: the last sampled memory (read now if nothing was
+     * sampled yet) and CPU percent, and the uptime derived from $nowMs.
      */
     public function snapshot(int $nowMs): MasterInfo
     {
@@ -85,25 +91,47 @@ class MasterMetrics
             pid: $this->pid,
             startedAtMs: $this->startedAtMs,
             uptimeSeconds: $uptimeSeconds,
-            rssBytes: $this->readRssBytes(),
+            memory: $this->memory ?? $this->readMemory(),
             cpuPercent: $this->cpuPercent,
         );
     }
 
     /**
-     * Resident set size of the master process from /proc/self/status (VmRSS, in kB),
-     * or 0 when it cannot be read (non-Linux).
+     * Memory of the master process: the resident set size from /proc/self/status
+     * (VmRSS), its proportional share and the same share of swap from
+     * /proc/self/smaps_rollup (Pss, SwapPss). The master holds the pages a preloaded
+     * pool inherited, so its share is part of what the pool takes. A value that cannot
+     * be read is 0 (non-Linux).
      */
-    protected function readRssBytes(): int
+    protected function readMemory(): Memory
     {
-        $contents = @file_get_contents('/proc/self/status');
+        $rollup = (string) @file_get_contents('/proc/self/smaps_rollup');
 
-        if ($contents === false) {
-            return 0;
-        }
+        return new Memory(
+            rssBytes: $this->readKibFieldBytes(
+                contents: (string) @file_get_contents('/proc/self/status'),
+                field: 'VmRSS',
+            ),
+            pssBytes: $this->readKibFieldBytes(
+                contents: $rollup,
+                field: 'Pss',
+            ),
+            swapPssBytes: $this->readKibFieldBytes(
+                contents: $rollup,
+                field: 'SwapPss',
+            ),
+        );
+    }
 
+    /**
+     * The value of the "<field>: <n> kB" line of a /proc file, in bytes, or 0 when the
+     * line is missing or does not parse. The colon is matched too, so Pss does not take
+     * the Pss_Anon line of smaps_rollup.
+     */
+    protected function readKibFieldBytes(string $contents, string $field): int
+    {
         foreach (explode("\n", $contents) as $line) {
-            if (!str_starts_with($line, 'VmRSS:')) {
+            if (!str_starts_with($line, $field . ':')) {
                 continue;
             }
 

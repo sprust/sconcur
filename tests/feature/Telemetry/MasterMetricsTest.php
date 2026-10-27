@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Telemetry;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\MasterMetrics;
 
 /**
@@ -52,6 +53,22 @@ class MasterMetricsTest extends TestCase
         self::assertSame(50.0, $metrics->snapshot(11_000)->cpuPercent);
     }
 
+    public function testMemoryIsHeldBetweenSamples(): void
+    {
+        $metrics = $this->stubbedMetrics();
+
+        $metrics->sample(10.0);
+
+        $metrics->rssBytes = 8_192;
+
+        // The panel asks every second; the memory it shows is the last sample's.
+        self::assertSame(4_096, $metrics->snapshot(11_000)->memory->rssBytes);
+
+        $metrics->sample(15.0);
+
+        self::assertSame(8_192, $metrics->snapshot(15_000)->memory->rssBytes);
+    }
+
     public function testSnapshotReportsPidUptimeAndStart(): void
     {
         $startedAtMs = 1_700_000_000_000;
@@ -63,7 +80,9 @@ class MasterMetricsTest extends TestCase
         self::assertSame((int) getmypid(), $snapshot->pid);
         self::assertSame($startedAtMs, $snapshot->startedAtMs);
         self::assertSame(5.0, $snapshot->uptimeSeconds);
-        self::assertGreaterThanOrEqual(0, $snapshot->rssBytes);
+        self::assertGreaterThan(0, $snapshot->memory->rssBytes);
+        self::assertGreaterThan(0, $snapshot->memory->pssBytes);
+        self::assertGreaterThanOrEqual(0, $snapshot->memory->swapPssBytes);
     }
 
     public function testNonPositiveStartFallsBackToNow(): void
@@ -97,13 +116,19 @@ class StubbedMasterMetrics extends MasterMetrics
 {
     public float $ticks = 0.0;
 
+    public int $rssBytes = 4_096;
+
     protected function readCpuTicks(): float
     {
         return $this->ticks;
     }
 
-    protected function readRssBytes(): int
+    protected function readMemory(): Memory
     {
-        return 4_096;
+        return new Memory(
+            rssBytes: $this->rssBytes,
+            pssBytes: 2_048,
+            swapPssBytes: 0,
+        );
     }
 }

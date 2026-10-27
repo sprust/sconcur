@@ -43,18 +43,27 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 /// holds the push loop for long; on timeout the frame is dropped.
 const PUSH_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The process memory split. `rss_bytes` is the whole resident set;
-/// One number, because one is all this can honestly report. A split between the
-/// extension's memory and PHP's would need a tracking allocator — this core
-/// allocates through the system one, alongside the interpreter, so nothing in
-/// the process can say which resident page belongs to which side.
+/// The process memory. `rss_bytes` is the whole resident set; `pss_bytes` is
+/// its proportional share, every page shared with other processes (the code and
+/// data a worker inherited from its master, the libraries) divided among the
+/// processes that map it, so the shares of a pool add up to what the pool takes;
+/// `swap_pss_bytes` is the same share of what the process has in swap.
 ///
-/// The JSON name is the wire contract the collector and
+/// There is no split between the extension's memory and PHP's: that would need
+/// a tracking allocator — this core allocates through the system one, alongside
+/// the interpreter, so nothing in the process can say which resident page
+/// belongs to which side.
+///
+/// The JSON names are the wire contract the collector and
 /// SConcur\Telemetry\Dto\Memory decode.
-#[derive(Serialize)]
+#[derive(Serialize, Default, Clone, Copy)]
 pub struct Memory {
     #[serde(rename = "rssBytes")]
     pub rss_bytes: i64,
+    #[serde(rename = "pssBytes")]
+    pub pss_bytes: i64,
+    #[serde(rename = "swapPssBytes")]
+    pub swap_pss_bytes: i64,
 }
 
 /// The HTTP-server workload section. The in-flight buckets are exclusive: a
@@ -407,7 +416,7 @@ async fn run(
     started_at_ms: i64,
     stop: CancellationToken,
 ) {
-    let mut cpu = metrics::CpuSampler::new();
+    let mut process = metrics::ProcessSample::new();
     let mut connection: Option<UnixStream> = None;
 
     // interval_at, not interval: tokio's first tick fires immediately, while a
@@ -428,7 +437,8 @@ async fn run(
             &socket_path,
             start_time,
             started_at_ms,
-            &mut cpu,
+            interval,
+            &mut process,
             &mut connection,
         )
         .await;
@@ -444,7 +454,8 @@ async fn push_once(
     socket_path: &str,
     start_time: Instant,
     started_at_ms: i64,
-    cpu: &mut metrics::CpuSampler,
+    interval: Duration,
+    process: &mut metrics::ProcessSample,
     connection: &mut Option<UnixStream>,
 ) {
     if connection.is_none() {
@@ -456,8 +467,11 @@ async fn push_once(
         }
     }
 
-    let workload = registry.collect_workload();
     let now = Instant::now();
+
+    process.refresh_if_due(now, interval).await;
+
+    let workload = registry.collect_workload();
 
     let snapshot = Snapshot {
         name: name.to_string(),
@@ -465,8 +479,8 @@ async fn push_once(
         updated_at_ms: epoch_millis(),
         started_at_ms,
         uptime_seconds: now.duration_since(start_time).as_secs_f64(),
-        memory: metrics::read_memory(),
-        cpu_percent: cpu.sample(now),
+        memory: process.memory,
+        cpu_percent: process.cpu_percent,
         runtime_tasks: crate::core::get().runtime().metrics().num_alive_tasks() as i64,
         requests: workload.requests,
         connections: workload.connections,

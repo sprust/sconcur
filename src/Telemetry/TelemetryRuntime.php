@@ -21,6 +21,11 @@ class TelemetryRuntime
 {
     protected const int SSE_PUSH_INTERVAL_MS = 1_000;
 
+    // The master's own memory and CPU are read on the cadence a worker reads its own
+    // (ext/src/stats/metrics.rs, SAMPLE_INTERVAL): the proportional share costs a walk
+    // of the page tables, and both describe the process over minutes, not seconds.
+    protected const int METRICS_SAMPLE_INTERVAL_MS = 5_000;
+
     protected Store $store;
 
     protected Collector $collector;
@@ -34,6 +39,8 @@ class TelemetryRuntime
     protected bool $enabled = false;
 
     protected int $lastSsePushMs = 0;
+
+    protected int $lastMetricsSampleMs = 0;
 
     /**
      * @param int                        $masterStartedAtMs the master's serve start (epoch ms),
@@ -132,11 +139,13 @@ class TelemetryRuntime
 
         $nowMs = (int) (microtime(true) * 1000);
 
-        if ($nowMs - $this->lastSsePushMs >= self::SSE_PUSH_INTERVAL_MS) {
-            // Refresh the master's rolling CPU% on the same 1s cadence (one consistent
-            // interval), then emit the SSE tick carrying the fresh master section.
+        if ($nowMs - $this->lastMetricsSampleMs >= self::METRICS_SAMPLE_INTERVAL_MS) {
             $this->masterMetrics->sample($nowMs / 1000);
 
+            $this->lastMetricsSampleMs = $nowMs;
+        }
+
+        if ($nowMs - $this->lastSsePushMs >= self::SSE_PUSH_INTERVAL_MS) {
             $this->panel->pushSse($nowMs);
 
             $this->lastSsePushMs = $nowMs;

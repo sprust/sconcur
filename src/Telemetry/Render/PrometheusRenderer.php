@@ -35,6 +35,8 @@ class PrometheusRenderer
         $output .= $this->family('sconcur_pool_workers_hung', 'Workers flagged hung (alive but stale snapshot).', 'gauge', $poolLabels, (string) $aggregate->workersHung);
         $output .= $this->family('sconcur_pool_watchdog_kills_total', 'Workers the watchdog killed for not answering, since the master started.', 'counter', $poolLabels, (string) $aggregate->watchdogKills);
         $output .= $this->family('sconcur_pool_memory_rss_bytes', 'Pool resident set size (with the extension).', 'gauge', $poolLabels, (string) $totals->memory->rssBytes);
+        $output .= $this->family('sconcur_pool_memory_pss_bytes', 'Pool proportional set size: shared pages divided among the processes mapping them.', 'gauge', $poolLabels, (string) $totals->memory->pssBytes);
+        $output .= $this->family('sconcur_pool_memory_swap_pss_bytes', 'Pool proportional share of swap.', 'gauge', $poolLabels, (string) $totals->memory->swapPssBytes);
         $output .= $this->family('sconcur_pool_cpu_percent', 'Pool CPU usage (sum of per-process percentages).', 'gauge', $poolLabels, $this->float($totals->cpuPercent));
         $output .= $this->family('sconcur_pool_runtime_tasks', 'Live tasks in the extension runtime, summed over the pool.', 'gauge', $poolLabels, (string) $totals->runtimeTasks);
 
@@ -43,7 +45,9 @@ class PrometheusRenderer
         if ($master !== null) {
             $output .= $this->family('sconcur_master_start_time_seconds', 'Master process start (unix seconds).', 'gauge', $poolLabels, (string) intdiv($master->startedAtMs, 1000));
             $output .= $this->family('sconcur_master_uptime_seconds', 'Master process uptime, in seconds.', 'gauge', $poolLabels, $this->float($master->uptimeSeconds));
-            $output .= $this->family('sconcur_master_memory_rss_bytes', 'Master process resident set size.', 'gauge', $poolLabels, (string) $master->rssBytes);
+            $output .= $this->family('sconcur_master_memory_rss_bytes', 'Master process resident set size.', 'gauge', $poolLabels, (string) $master->memory->rssBytes);
+            $output .= $this->family('sconcur_master_memory_pss_bytes', 'Master process proportional set size.', 'gauge', $poolLabels, (string) $master->memory->pssBytes);
+            $output .= $this->family('sconcur_master_memory_swap_pss_bytes', 'Master process proportional share of swap.', 'gauge', $poolLabels, (string) $master->memory->swapPssBytes);
             $output .= $this->family('sconcur_master_cpu_percent', 'Master process CPU usage percent.', 'gauge', $poolLabels, $this->float($master->cpuPercent));
         }
 
@@ -98,6 +102,8 @@ class PrometheusRenderer
             ['sconcur_worker_cpu_percent', 'Worker CPU usage percent.', fn(WorkerEntry $worker): string => $this->float($worker->cpuPercent)],
             ['sconcur_worker_runtime_tasks', 'Live tasks in the extension runtime.', fn(WorkerEntry $worker): string => (string) $worker->runtimeTasks],
             ['sconcur_worker_memory_rss_bytes', 'Worker resident set size (with the extension).', fn(WorkerEntry $worker): string => (string) $worker->memory->rssBytes],
+            ['sconcur_worker_memory_pss_bytes', 'Worker proportional set size.', fn(WorkerEntry $worker): string => (string) $worker->memory->pssBytes],
+            ['sconcur_worker_memory_swap_pss_bytes', 'Worker proportional share of swap.', fn(WorkerEntry $worker): string => (string) $worker->memory->swapPssBytes],
         ];
 
         foreach ($processMetrics as [$metricName, $help, $value]) {
@@ -139,6 +145,8 @@ class PrometheusRenderer
             ['sconcur_group_watchdog_kills_total', 'Workers of the group the watchdog killed, since the master started.', fn(GroupAggregate $group): string => (string) $group->watchdogKills],
             ['sconcur_group_cpu_percent', 'CPU usage summed over the group.', fn(GroupAggregate $group): string => $this->float($group->totals->cpuPercent)],
             ['sconcur_group_memory_rss_bytes', 'Resident set size summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->rssBytes],
+            ['sconcur_group_memory_pss_bytes', 'Proportional set size summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->pssBytes],
+            ['sconcur_group_memory_swap_pss_bytes', 'Proportional share of swap summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->swapPssBytes],
             ['sconcur_group_runtime_tasks', 'Live tasks in the extension runtime, summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->runtimeTasks],
         ];
 

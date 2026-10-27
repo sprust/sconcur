@@ -89,6 +89,8 @@ class TelemetryRuntimeTest extends TestCase
         self::assertSame((int) getmypid(), $decoded['master']['pid']);
         self::assertSame(gmdate('c', intdiv($masterStartedAtMs, 1000)), $decoded['master']['startedAt']);
         self::assertArrayHasKey('rssBytes', $decoded['master']['memory']);
+        self::assertArrayHasKey('pssBytes', $decoded['master']['memory']);
+        self::assertArrayHasKey('swapPssBytes', $decoded['master']['memory']);
 
         // Wrong/missing token must be 404 (the endpoint is hidden).
         [$statusNoToken] = $this->httpGet($port, '/api/stats', [], $runtime);

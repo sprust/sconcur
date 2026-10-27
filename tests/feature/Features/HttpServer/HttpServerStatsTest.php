@@ -45,6 +45,12 @@ class HttpServerStatsTest extends TestCase
             self::assertArrayHasKey('requests', $data['totals'], 'an HTTP pool reports a requests section');
             self::assertArrayNotHasKey('connections', $data['totals'], 'an HTTP pool has no connections section');
             self::assertArrayHasKey('memory', $data['totals']);
+            // Read by the real workers: the share of what they map with each other
+            // and with the master is below the sum of their resident sets.
+            self::assertGreaterThan(0, $data['totals']['memory']['pssBytes']);
+            self::assertLessThan($data['totals']['memory']['rssBytes'], $data['totals']['memory']['pssBytes']);
+            self::assertGreaterThanOrEqual(0, $data['totals']['memory']['swapPssBytes']);
+            self::assertGreaterThan(0, $data['master']['memory']['pssBytes']);
             self::assertArrayHasKey('runtimeTasks', $data['totals']);
 
             // The token travels in the Authorization header / config, never the log.

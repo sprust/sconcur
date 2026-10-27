@@ -120,7 +120,7 @@ AMQP-консьюмер) сам подхватывает env, который с�
 |---|---|---|
 | `SCONCUR_TELEMETRY_SOCKET` | unix-сокет коллектора; пусто = отправка выключена | пусто |
 | `SCONCUR_SERVER_NAME` | метка снапшота; мастер ставит `<группа>:<слот>` | `sconcur-server` |
-| `SCONCUR_TELEMETRY_INTERVAL_MS` | период снятия и отправки снапшота | `1000` |
+| `SCONCUR_TELEMETRY_INTERVAL_MS` | период отправки снапшота; память и CPU читаются раз в 5 с или при каждой отправке, если она реже | `1000` |
 
 Под мастером сокет — `<runtimeDir>/<name>.telemetry.sock`, ставится только при
 включённой телеметрии. Собственные параметры конструктора сервера (`telemetrySocket`,
@@ -143,7 +143,9 @@ AMQP-консьюмер) сам подхватывает env, который с�
 | Поле | Что это | Источник |
 |---|---|---|
 | `memory.rssBytes` | RSS всего процесса (вместе с расширением) | `/proc/self/status` `VmRSS` |
-| `cpuPercent` | загрузка CPU процессом за интервал | разница `/proc/self/stat` |
+| `memory.pssBytes` | PSS: доля процесса в его резидентной памяти, страница, общая с другими процессами, делится между ними | `/proc/self/smaps_rollup` `Pss` |
+| `memory.swapPssBytes` | такая же доля того, что у процесса в swap | `/proc/self/smaps_rollup` `SwapPss` |
+| `cpuPercent` | загрузка CPU процессом между двумя последними замерами | разница `/proc/self/stat` |
 | `runtimeTasks` | живые задачи в рантайме расширения | собственные метрики рантайма |
 | `startedAt` / `uptimeSeconds` | когда стартовал serve-цикл воркера (UTC) и сколько живёт | старт serve-цикла |
 | `requests.completed` | обслужено запросов (HTTP) | счётчик |
@@ -159,13 +161,29 @@ AMQP-консьюмер) сам подхватывает env, который с�
 | `consumers.inFlight` | отдано и ещё не рассчитано | реестр в работе |
 | `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1с,5с) / [5с,15с) / ≥15с | возраст в работе |
 | `master.pid` / `startedAt` / `uptimeSeconds` | сам процесс мастера | мастер |
-| `master.memory.rssBytes` / `master.cpuPercent` | RSS и CPU мастера | `/proc/self/*` |
+| `master.memory.*` / `master.cpuPercent` | память и CPU мастера | `/proc/self/*` |
 
 Все поля даты-времени — в UTC (ISO-8601 со смещением `+00:00`). Корзины
 длительностей не пересекаются: запрос, который идёт уже 7 с, попадает только в
 `inFlight5to15s`. В `totals` `requests.avgMs` взвешен по `completed` воркеров, а
 `consumers.avgMs` — по `consumers.timed`; `cpuPercent` — сумма по
 процессам и может превышать 100%.
+
+RSS считает страницу, общую для нескольких процессов, целиком в каждом из них: то,
+что воркер унаследовал от мастера, бинарник PHP, библиотеки. Сумма RSS по пулу
+поэтому завышает память, которую пул занимает. PSS делит такую страницу между
+процессами, которые её держат, так что PSS воркеров плюс PSS мастера — это и есть
+память пула; `swapPssBytes` добавляет то, что ушло в swap. Утечку PSS не показывает:
+при нехватке памяти ядро выбрасывает чистые файловые страницы, и PSS падает, хотя
+ничего не освободилось, а PSS воркера меняется, когда сосед стартует или
+завершается. Про утечки — в [нагрузочном тестировании](load-testing.ru.md).
+
+Память и CPU читаются раз в 5 с, снапшоты между замерами повторяют последние
+значения. PSS ядро считает, обходя таблицы страниц процесса (0,2 мс для воркера в
+60 МБ, несколько миллисекунд для 500 МБ), и всё это время держит блокировку его
+карты памяти: PHP-поток, который в этот момент выделяет или освобождает память
+через mmap, ждёт. Расширение читает PSS в своём пуле потоков для блокирующих
+вызовов, поэтому его собственный рантайм не ждёт.
 
 Счётчики консьюмера не стоят ничего лишнего на проводе: доставка считается там, где
 уходит в PHP, и рассчитывается тем самым `basic.ack`, `basic.nack` или `basic.reject`,
@@ -202,11 +220,11 @@ PHP-потоком рантайм продолжает слать снапшот
     "pid": 12340,
     "startedAt": "2026-06-24T11:00:00+00:00",
     "uptimeSeconds": 3600.0,
-    "memory": { "rssBytes": 16777216 },
+    "memory": { "rssBytes": 16777216, "pssBytes": 8388608, "swapPssBytes": 0 },
     "cpuPercent": 0.6
   },
   "totals": {
-    "memory": { "rssBytes": 335544320 },
+    "memory": { "rssBytes": 335544320, "pssBytes": 209715200, "swapPssBytes": 0 },
     "cpuPercent": 28.4,
     "runtimeTasks": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
@@ -218,7 +236,7 @@ PHP-потоком рантайм продолжает слать снапшот
       "workersHung": 0,
       "watchdogKills": 0,
       "totals": {
-        "memory": { "rssBytes": 335544320 },
+        "memory": { "rssBytes": 335544320, "pssBytes": 209715200, "swapPssBytes": 0 },
         "cpuPercent": 28.4,
         "runtimeTasks": 192,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
@@ -233,7 +251,7 @@ PHP-потоком рантайм продолжает слать снапшот
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040 },
+      "memory": { "rssBytes": 41943040, "pssBytes": 26214400, "swapPssBytes": 0 },
       "cpuPercent": 3.7,
       "runtimeTasks": 24,
       "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
@@ -261,8 +279,10 @@ sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
 sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
 sconcur_master_start_time_seconds{name="sconcur-servers"} 1782298800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_master_memory_pss_bytes{name="sconcur-servers"} 8388608
 sconcur_group_workers{name="sconcur-servers",group="http"} 8
 sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 335544320
+sconcur_group_memory_pss_bytes{name="sconcur-servers",group="http"} 209715200
 sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1782302087
 sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
@@ -271,8 +291,8 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 1054
 
 | Семейство | Область | Метки |
 | --- | --- | --- |
-| `sconcur_pool_*` | все воркеры мастера вместе: число воркеров и зависших, убитых watchdog, CPU, RSS, задачи рантайма и нагрузка — `requests`, `connections`, `deliveries` (нагрузка очередей) | `name` |
-| `sconcur_group_*` | один пул: число воркеров, зависших, убитых watchdog, CPU, RSS и задачи рантайма | `name`, `group` |
+| `sconcur_pool_*` | все воркеры мастера вместе: число воркеров и зависших, убитых watchdog, CPU, RSS, PSS, задачи рантайма и нагрузка — `requests`, `connections`, `deliveries` (нагрузка очередей) | `name` |
+| `sconcur_group_*` | один пул: число воркеров, зависших, убитых watchdog, CPU, RSS, PSS и задачи рантайма | `name`, `group` |
 | `sconcur_master_*` | сам процесс мастера | `name` |
 | `sconcur_worker_*` | один воркер | `name`, `pid`; `group` — только у метрик процесса |
 
@@ -314,8 +334,9 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 1054
   пока новые воркеры не отправят снапшот, и счётчики начинаются с нуля.
 - `requests.avgMs` — среднее за всю жизнь воркера, поэтому оно сглаживает всплески
   (перцентили — возможное будущее улучшение).
-- Весь снапшот снимается раз в интервал (по умолчанию 1 с), и ни один источник не
-  останавливает процесс, чтобы его прочитать.
+- Снапшот уходит раз в интервал (по умолчанию 1 с), память и CPU в нём читаются раз
+  в 5 с. Ни один источник не останавливает процесс, чтобы его прочитать, но чтение
+  PSS держит блокировку карты памяти на время обхода (см. выше).
 
 ---
 

@@ -94,11 +94,12 @@ class HtmlRenderer
 <table>
 <caption>Totals</caption>
 <tr>
-<th>RSS, MiB</th><th>non-ext, MiB</th><th>CPU %</th><th>ext tasks</th>
+<th>RSS, MiB</th><th>PSS, MiB</th><th>CPU %</th><th>ext tasks</th>
 ' . $workloadTotalsHead . '
 </tr>
 <tr>
 <td>' . $this->mib($totals->memory->rssBytes) . '</td>
+<td>' . $this->mib($totals->memory->pssBytes) . '</td>
 <td>' . $this->f1($totals->cpuPercent) . '</td>
 <td>' . $totals->runtimeTasks . '</td>
 ' . $workloadTotalsRow . '
@@ -117,7 +118,7 @@ class HtmlRenderer
 <table>
 <caption>Workers</caption>
 <tr>
-<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>ext tasks</th><th>workload</th>
+<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>PSS, MiB</th><th>ext tasks</th><th>workload</th>
 </tr>' . $rows . '
 </table>
 </body>
@@ -138,14 +139,15 @@ class HtmlRenderer
 <table>
 <caption>Master</caption>
 <tr>
-<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>CPU %</th><th>RSS, MiB</th>
+<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>CPU %</th><th>RSS, MiB</th><th>PSS, MiB</th>
 </tr>
 <tr>
 <td>' . $master->pid . '</td>
 <td>' . $this->utc($master->startedAtMs) . '</td>
 <td>' . $this->f1($master->uptimeSeconds) . '</td>
 <td>' . $this->f1($master->cpuPercent) . '</td>
-<td>' . $this->mib($master->rssBytes) . '</td>
+<td>' . $this->mib($master->memory->rssBytes) . '</td>
+<td>' . $this->mib($master->memory->pssBytes) . '</td>
 </tr>
 </table>';
     }
@@ -172,6 +174,7 @@ class HtmlRenderer
 <td>' . $group->workersHung . '</td>
 <td>' . $group->watchdogKills . '</td>
 <td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
+<td>' . $this->mib($group->totals->memory->pssBytes) . '</td>
 <td>' . $this->f1($group->totals->cpuPercent) . '</td>
 <td>' . $group->totals->runtimeTasks . '</td>
 <td>' . $this->workloadCell(
@@ -186,7 +189,7 @@ class HtmlRenderer
 <table>
 <caption>Groups</caption>
 <tr>
-<th>group</th><th>workers</th><th>hung</th><th>watchdog kills</th><th>RSS, MiB</th><th>CPU %</th><th>ext tasks</th><th>workload</th>
+<th>group</th><th>workers</th><th>hung</th><th>watchdog kills</th><th>RSS, MiB</th><th>PSS, MiB</th><th>CPU %</th><th>ext tasks</th><th>workload</th>
 </tr>' . $rows . '
 </table>';
     }
@@ -238,6 +241,7 @@ class HtmlRenderer
 <td>' . $worker->snapshotAgeMs . '</td>
 <td>' . $this->f1($worker->cpuPercent) . '</td>
 <td>' . $this->mib($worker->memory->rssBytes) . '</td>
+<td>' . $this->mib($worker->memory->pssBytes) . '</td>
 <td>' . $worker->runtimeTasks . '</td>
 <td>' . $this->workloadCell(
             requests: $worker->requests,

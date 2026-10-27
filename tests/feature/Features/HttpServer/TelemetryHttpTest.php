@@ -40,6 +40,8 @@ class TelemetryHttpTest extends TestCase
         // Weighted: (2*10 + 6*30) / 40 = 5.0.
         self::assertSame(5.0, $aggregate->totals->requests->avgMs);
         self::assertSame(2000, $aggregate->totals->memory->rssBytes);
+        self::assertSame(1200, $aggregate->totals->memory->pssBytes);
+        self::assertSame(100, $aggregate->totals->memory->swapPssBytes);
         self::assertNull($aggregate->totals->connections);
     }
 

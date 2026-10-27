@@ -145,6 +145,8 @@ class Aggregator
     protected function sum(array $storedSnapshots): Totals
     {
         $rssBytes     = 0;
+        $pssBytes     = 0;
+        $swapPssBytes = 0;
         $cpuPercent   = 0.0;
         $runtimeTasks = 0;
 
@@ -152,6 +154,8 @@ class Aggregator
             $snapshot = $storedSnapshot->snapshot;
 
             $rssBytes += $snapshot->memory->rssBytes;
+            $pssBytes += $snapshot->memory->pssBytes;
+            $swapPssBytes += $snapshot->memory->swapPssBytes;
             $cpuPercent += $snapshot->cpuPercent;
             $runtimeTasks += $snapshot->runtimeTasks;
         }
@@ -159,6 +163,8 @@ class Aggregator
         return new Totals(
             memory: new Memory(
                 rssBytes: $rssBytes,
+                pssBytes: $pssBytes,
+                swapPssBytes: $swapPssBytes,
             ),
             cpuPercent: $cpuPercent,
             runtimeTasks: $runtimeTasks,
