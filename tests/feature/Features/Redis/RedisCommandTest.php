@@ -291,6 +291,25 @@ class RedisCommandTest extends BaseTestCase
         self::assertSame('2', $map['two']);
     }
 
+    public function testAnEmptyFieldComesBackAsAnEmptyKey(): void
+    {
+        $this->connection->hSet(
+            key: 'hash',
+            fields: [
+                ''  => 'empty',
+                '-' => 'minus',
+            ],
+        );
+
+        self::assertSame(
+            [
+                ''  => 'empty',
+                '-' => 'minus',
+            ],
+            $this->connection->hGetAll('hash'),
+        );
+    }
+
     public function testFlushDbWithoutConfirmationIsRefused(): void
     {
         // It used to answer false — which is also what a flush that did not land

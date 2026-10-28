@@ -35,7 +35,7 @@ use types::method::Method;
 
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
-const VERSION: &str = "0.18.0";
+const VERSION: &str = "0.18.1";
 
 // Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
 // result builder the wait exports hand their results to, the value builder that
@@ -313,6 +313,8 @@ fn write_value(destination: *mut c_void, value: &Value) -> bool {
             unsafe { sconcur_value_array(destination, entries.len() as c_uint) };
 
             for (key, item) in entries {
+                // An empty key's pointer is dangling; the glue reads none of
+                // it, nor past the length of any other.
                 let slot = match key {
                     Key::Int(index) => unsafe { sconcur_array_index_slot(destination, *index as c_longlong) },
                     Key::Str(bytes) => unsafe {

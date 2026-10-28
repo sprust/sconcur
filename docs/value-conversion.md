@@ -94,7 +94,8 @@ value builder (`sconcur_value_*`, `sconcur_array_*`, `sconcur_object_*` in
 
 - a `List` and a `Map` both become a PHP array (`array_init_size`, then one slot
   per entry); a `Map`'s string key that is the decimal form of an integer becomes
-  that integer key, as it would in an array literal;
+  that integer key, as it would in an array literal, and every other one, the
+  empty key included, stays a string key;
 - an `Object` becomes an instance of the named class, created without its
   constructor, each named property written into its declared slot. The class is
   looked up through the autoloader once per request and cached; a class that is

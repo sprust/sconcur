@@ -70,7 +70,9 @@ extern zval *sconcur_result_append(zval *list, const sconcur_result_t *result);
  * calls answer the zval of the new element, to be written in turn, or NULL with
  * a PHP exception pending; the slot is valid until the next element is added to
  * the same container, which is why a child is filled before its sibling is
- * asked for.
+ * asked for. Every (pointer, length) pair is a view into a Rust buffer: not
+ * NUL-terminated, and with a length of 0 the pointer is dangling, so a builder
+ * reads at most length bytes and none of an empty one.
  */
 extern void sconcur_value_null(zval *destination);
 extern void sconcur_value_bool(zval *destination, int flag);

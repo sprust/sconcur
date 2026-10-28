@@ -438,6 +438,21 @@ zval *sconcur_array_key_slot(zval *array, const char *key, size_t length)
 
     ZVAL_NULL(&placeholder);
 
+    /*
+     * The numeric check of the symtable reads the first byte, and the second
+     * after a '-', before it looks at the length: it is written for a
+     * zend_string, which always ends in a NUL. The core's key is not
+     * NUL-terminated, and an empty one points at no byte at all, so the two keys
+     * it would read past are inserted as they are. Neither is numeric.
+     */
+    if (length == 0) {
+        return zend_hash_str_update(Z_ARRVAL_P(array), "", 0, &placeholder);
+    }
+
+    if (length == 1 && key[0] == '-') {
+        return zend_hash_str_update(Z_ARRVAL_P(array), key, length, &placeholder);
+    }
+
     /* symtable: a numeric-string key becomes the integer key PHP would make
      * of it in an array literal. */
     return zend_symtable_str_update(Z_ARRVAL_P(array), key, length, &placeholder);

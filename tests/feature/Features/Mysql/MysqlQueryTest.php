@@ -98,6 +98,26 @@ class MysqlQueryTest extends BaseTestCase
         self::assertSame([], $rows);
     }
 
+    /**
+     * MySQL lets a column be aliased to nothing. The empty name crashed the process when
+     * the row was built, and a lone '-' made the numeric check of the key read past it.
+     */
+    public function testAnEmptyAndAMinusColumnNameAreKept(): void
+    {
+        $rows = $this->connection->fetchAll(sql: "SELECT 1 AS '', 2 AS '-', 3 AS name");
+
+        self::assertSame(
+            [
+                [
+                    ''     => 1,
+                    '-'    => 2,
+                    'name' => 3,
+                ],
+            ],
+            $rows,
+        );
+    }
+
     public function testStreamingBatchesAndEarlyBreak(): void
     {
         for ($index = 1; $index <= 10; ++$index) {

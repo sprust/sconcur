@@ -42,7 +42,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.18.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.18.1';
 
     /*
      * Nothing is serialized in either direction. A push hands the core the

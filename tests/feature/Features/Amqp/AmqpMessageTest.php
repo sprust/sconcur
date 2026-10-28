@@ -93,6 +93,37 @@ class AmqpMessageTest extends AmqpTestCase
     }
 
     /**
+     * A field table may name a field with nothing: the empty name crashed the process when
+     * the delivery was built, and a lone '-' made the numeric check of the key read past it.
+     */
+    public function testAnEmptyAndAMinusHeaderNameAreKept(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $headers = [
+            ''       => 'empty',
+            '-'      => 'minus',
+            'nested' => [
+                ''  => 1,
+                '-' => 2,
+            ],
+        ];
+
+        $queue->publish(new Message(body: 'empty names', headers: $headers));
+
+        $delivery = $this->waitForMessage($queue);
+
+        self::assertNotNull($delivery);
+        self::assertSame($headers, $delivery->properties->headers);
+
+        $delivery->ack();
+    }
+
+    /**
      * ext-amqp publishes text/plain for a message that names no content type, and the
      * calque copied that. A property nobody set is now simply absent, which is what AMQP
      * means by one.
